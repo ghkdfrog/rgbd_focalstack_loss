@@ -1,0 +1,103 @@
+python train_focal.py \
+    --data_dir ../varifocal/data \
+    --diopter_mode coc \
+    --unmatch_ratio 39 \
+    --epochs 20 \
+    --batch_size 8 \
+    --num_workers 2
+
+
+python train_focal.py \
+    --data_dir ../varifocal/data \
+    --diopter_mode spatial \
+    --unmatch_ratio 39 \
+    --epochs 20 \
+    --batch_size 8 \
+    --num_workers 2
+
+python train_focal.py \
+    --data_dir ../varifocal/data \
+    --diopter_mode coc \
+    --unmatch_ratio 5 \
+    --epochs 20 \
+    --batch_size 8 \
+    --num_workers 2
+
+python train_focal.py \
+    --data_dir ../varifocal/data \
+    --diopter_mode coc \
+    --unmatch_ratio 3 \
+    --epochs 20 \
+    --batch_size 8 \
+    --num_workers 2 \
+    --val_unmatch_ratio 39
+
+python train_focal.py \
+    --data_dir ../varifocal/data \
+    --diopter_mode spatial \
+    --unmatch_ratio 3 \
+    --epochs 20 \
+    --batch_size 8 \
+    --num_workers 2 \
+    --val_unmatch_ratio 39
+
+**current best model training command**
+python train_focal.py \
+    --data_dir ../varifocal/data \
+    --diopter_mode spatial \
+    --unmatch_ratio 3 \
+    --epochs 20 \
+    --batch_size 8 \
+    --num_workers 2
+    --val_unmatch_ratio 0
+
+**test 39 valid unmatch**
+python train_focal.py \
+    --data_dir ../varifocal/data \
+    --diopter_mode spatial \
+    --unmatch_ratio 3 \
+    --epochs 20 \
+    --batch_size 8 \
+    --num_workers 2
+    --val_unmatch_ratio 39
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 39 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode coc --unmatch_ratio 39 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39
+
+
+**w_psnr**
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 1
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 100
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 2
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 5
+
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 100 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 1
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 1 --w_ssim 0.5 --w_lpips 0.5
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 3 --w_psnr 1 --w_ssim 1 --w_lpips 1
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 3 --w_psnr 1 --w_ssim 0.5 --w_lpips 0.5
+
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 3 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 3 --w_psnr 1 --w_ssim 0.3 --w_lpips 0.3
+
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 5 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 5 --w_psnr 1 --w_ssim 1 --w_lpips 1
+
+
+
+
+# 실험 1 (PSNR 올인)
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 39 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 1 --w_ssim 0 --w_lpips 0  --version v2
+
+# 실험 2 (비율 1:0.5:0.5)
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 39 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 1 --w_ssim 0.5 --w_lpips 0.5 --version v2
+
+# 실험 3 (비율 1:1:1 균형)
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 39 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 1 --w_ssim 1 --w_lpips 1 --version v2
+
+coc
+python train_focal.py --data_dir ../varifocal/data --diopter_mode spatial --unmatch_ratio 39 --epochs 20 --batch_size 8 --num_workers 6 --val_unmatch_ratio 39 --w_psnr 1 --w_ssim 1 --w_lpips 1 --version v2 --diopter_mode coc

@@ -1,0 +1,23 @@
+{
+  "data_dir": "../varifocal/data",
+  "output_dir": "./runs",
+  "resume": null,
+  "epochs": 60,
+  "batch_size": 8,
+  "lr": 0.0001,
+  "weight_decay": 1e-05,
+  "num_workers": 4,
+  "save_every": 10,
+  "use_augmented": true,
+  "use_weak": true,
+  "use_aif": true,
+  "clean_ratio": 1.0,
+  "w_psnr": 1.0,
+  "w_ssim": 1.0,
+  "w_lpips": 1.0,
+  "adv_interval": 1,
+  "adv_steps": 15,
+  "adv_scenes": 5,
+  "adv_planes": 2,
+  "adv_train_epochs": 20
+}

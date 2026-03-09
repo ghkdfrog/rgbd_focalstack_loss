@@ -1,0 +1,15 @@
+{
+  "data_dir": "../varifocal/data",
+  "output_dir": "./runs",
+  "resume": null,
+  "epochs": 100,
+  "batch_size": 8,
+  "lr": 0.0001,
+  "weight_decay": 1e-05,
+  "num_workers": 4,
+  "save_every": 10,
+  "use_augmented": true,
+  "w_psnr": 0.5,
+  "w_ssim": 1.0,
+  "w_lpips": 2.0
+}

@@ -1,0 +1,11 @@
+--- gradient_matching_focal.ipynb
++++ gradient_matching_focal_coc.ipynb
+@@ -105,7 +105,7 @@
+ train_loader = DataLoader(train_ds, batch_size=1, shuffle=True)
+ 
+ step_size = 0.2
+-num_steps = 5
++num_steps = 50
+ epochs = 50 # 빠른 학습 경과 확인을 위해 에폭 설정
+ 
+ print("학습 시작...")

@@ -1,0 +1,22 @@
+{
+  "data_dir": "../varifocal/data",
+  "output_dir": "./runs",
+  "resume": null,
+  "epochs": 20,
+  "batch_size": 8,
+  "lr": 0.0001,
+  "weight_decay": 1e-05,
+  "num_workers": 4,
+  "save_every": 10,
+  "use_augmented": true,
+  "use_weak": true,
+  "use_aif": true,
+  "clean_ratio": 1.0,
+  "w_psnr": 1.0,
+  "w_ssim": 1.0,
+  "w_lpips": 1.0,
+  "adv_mode": "append",
+  "adv_ratio": 0.33,
+  "adv_steps": 15,
+  "adv_lr": 0.01
+}
