@@ -52,7 +52,7 @@ class FocalDataset(Dataset):
 
     def __init__(self, data_dir, generated_data_dir,
                  split='train', unmatch_ratio=3, seed=42,
-                 use_coc=False, return_gt=False, single_scene_only=False):
+                 use_coc=False, return_gt=False, single_scene_only=False, num_scenes=0):
         self.data_dir = data_dir
         self.generated_data_dir = generated_data_dir
         self.unmatch_ratio = unmatch_ratio
@@ -71,6 +71,9 @@ class FocalDataset(Dataset):
 
         start, end = self.SPLIT_RANGES[split]
         self.scenes = list(range(start, end))
+        
+        if num_scenes > 0:
+            self.scenes = self.scenes[:num_scenes]
         
 
 

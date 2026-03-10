@@ -230,13 +230,15 @@ def main():
         args.data_dir, generated_data_dir,
         split='train', unmatch_ratio=args.unmatch_ratio,
         use_coc=use_coc, return_gt=True,
-        single_scene_only=args.single_scene_only
+        single_scene_only=args.single_scene_only,
+        num_scenes=args.num_scenes
     )
     val_ds = FocalDataset(
         args.data_dir, generated_data_dir,
         split='val', unmatch_ratio=0,
         use_coc=use_coc, return_gt=True,
-        single_scene_only=args.single_scene_only
+        single_scene_only=args.single_scene_only,
+        num_scenes=args.num_scenes
     )
 
     val_loader = DataLoader(val_ds, batch_size=args.batch_size,

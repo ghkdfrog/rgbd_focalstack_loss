@@ -49,6 +49,8 @@ def get_parser():
     # Dataset
     parser.add_argument('--single_scene_only', action='store_true',
                         help='Only use scene 0 for quick prototyping')
+    parser.add_argument('--num_scenes', type=int, default=0,
+                        help='Number of scenes to use (0 = all)')
     parser.add_argument('--unmatch_ratio', type=int, default=0,
                         help='Unmatch samples per match (0 = match only)')
 
