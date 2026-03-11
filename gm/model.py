@@ -65,6 +65,69 @@ class SimpleCNN(nn.Module):
         return x
 
 
+class SimpleCNNDeep(nn.Module):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc'):
+        super(SimpleCNNDeep, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+
+        # diopter_mode에 따라 입력 채널 수 결정
+        if diopter_mode == 'spatial':
+            in_ch = input_channels + 1
+        elif diopter_mode == 'coc':
+            in_ch = input_channels + 1
+        else:
+            in_ch = input_channels
+
+        # Conv Layers: 공간 해상도 유지 (stride=1), 깊이 10레이어
+        self.conv1 = nn.Conv2d(in_ch, 16, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        self.conv4 = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.conv5 = nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1)
+        # 256 채널 유지하며 깊이 추가
+        self.conv6 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.conv7 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.conv8 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.conv9 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.conv10 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+
+        # Energy output head
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            self.fc = nn.Linear(256 * 512 * 512, 1)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        if self.diopter_mode == 'spatial':
+            diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x = torch.cat([x, diopter_map], dim=1)
+        elif self.diopter_mode == 'coc':
+            pass
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
+        
+        x = F.relu(self.conv6(x))
+        x = F.relu(self.conv7(x))
+        x = F.relu(self.conv8(x))
+        x = F.relu(self.conv9(x))
+        x = F.relu(self.conv10(x))
+
+        if self.energy_head == 'conv1x1':
+            x = self.conv_energy(x)           # (N, 1, H, W)
+            x = torch.sum(x, dim=(2, 3))      # (N, 1)
+        else:  # 'fc'
+            x = torch.flatten(x, 1)
+            x = self.fc(x)
+        return x
+
+
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""
     lines = []

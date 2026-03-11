@@ -25,8 +25,8 @@ from tqdm import tqdm
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, save_model_architecture
-from gm.config import parse_args
+from gm.model import SimpleCNN, SimpleCNNDeep, save_model_architecture
+from gm.config import get_parser_args
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 try:
@@ -260,7 +260,7 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
 # Main
 # ──────────────────────────────────────────────────────────────
 def main():
-    args = parse_args()
+    args = get_parser_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
@@ -305,9 +305,19 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch_size,
                             shuffle=False, num_workers=args.num_workers)
 
-    # ── Model ──
-    model = SimpleCNN(diopter_mode=args.diopter_mode,
-                      energy_head=args.energy_head).to(device)
+    # ── Model init ──
+    if args.arch == 'deep':
+        model = SimpleCNNDeep(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head
+        ).to(device)
+    else:
+        model = SimpleCNN(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head
+        ).to(device)
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {total_params:,}  diopter_mode={args.diopter_mode}  energy_head={args.energy_head}")
@@ -380,6 +390,7 @@ def main():
             'epoch': epoch,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
+            'arch': args.arch,
             'diopter_mode': args.diopter_mode,
             'energy_head': args.energy_head,
             'eta_schedule': args.eta_schedule,

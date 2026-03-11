@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN
+from gm.model import SimpleCNN, SimpleCNNDeep
 from gm.config import parse_args
 from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
@@ -34,9 +34,6 @@ def load_model(run_dir, device):
     else:
         saved_args = {}
 
-    diopter_mode = saved_args.get('diopter_mode', 'coc')
-    energy_head = saved_args.get('energy_head', 'fc')
-
     # 체크포인트 로드
     ckpt_path = os.path.join(run_dir, 'best_model.pth')
     if not os.path.exists(ckpt_path):
@@ -46,12 +43,21 @@ def load_model(run_dir, device):
 
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
+    saved_args = ckpt.get('args', saved_args)  # backward compatibility, prioritize ckpt args
 
-    # 체크포인트 우선
+    arch = saved_args.get('arch', 'simple')
+    diopter_mode = saved_args.get('diopter_mode', 'coc') # Default 'coc' from original code
+    energy_head = saved_args.get('energy_head', 'fc')
+
+    # 체크포인트 우선 (if present in ckpt, override saved_args)
     diopter_mode = ckpt.get('diopter_mode', diopter_mode)
     energy_head = ckpt.get('energy_head', energy_head)
 
-    model = SimpleCNN(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
+    if arch == 'deep':
+        model = SimpleCNNDeep(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
+    else:
+        model = SimpleCNN(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
+        
     model.load_state_dict(ckpt['model_state_dict'])
     model.eval()
 

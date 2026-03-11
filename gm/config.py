@@ -19,6 +19,9 @@ def get_parser():
                         help='Root directory for run outputs')
 
     # Model
+    parser.add_argument('--arch', type=str, default='simple',
+                        choices=['simple', 'deep'],
+                        help='Model architecture: simple (5-layer) or deep (10-layer, capped at 256)')
     parser.add_argument('--diopter_mode', type=str, default='coc',
                         choices=['spatial', 'coc'],
                         help='Diopter conditioning mode')
