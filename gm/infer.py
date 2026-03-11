@@ -10,6 +10,7 @@ Usage:
 import os
 import sys
 import json
+import csv
 
 import torch
 import numpy as np
@@ -59,8 +60,10 @@ def load_model(run_dir, device):
 
 def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                        eta_min=0.002, eta_schedule='constant', use_langevin_noise=False):
-    """한 장의 focal plane을 생성하고 PSNR과 히스토리를 반환"""
+    """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR을 반환"""
     N, C, H, W = x.shape
+    step_psnr_history = []
+    gt_cpu = gt.cpu().squeeze()  # step별 PSNR 계산용 (미리 CPU로)
 
     with torch.enable_grad():
         current_image = torch.randn_like(gt).to(device)
@@ -90,14 +93,23 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
             noise = use_langevin_noise and (step < gm_steps - 1)
             current_image = langevin_step(current_image, grad, eta, noise)
 
+            # step별 PSNR 기록
+            with torch.no_grad():
+                step_img = torch.clamp(current_image, 0.0, 1.0).cpu().squeeze()
+                step_psnr = calculate_psnr(step_img, gt_cpu).item()
+                step_psnr_history.append({
+                    'step': step + 1,
+                    'eta': round(eta, 6),
+                    'psnr': round(step_psnr, 4)
+                })
+
             if (step + 1) % 10 == 0 or step == gm_steps - 1:
                 history.append(current_image.cpu())
 
     final_image = torch.clamp(current_image, 0.0, 1.0).cpu().squeeze()
-    gt_disp = gt.cpu().squeeze()
-    psnr = calculate_psnr(final_image, gt_disp).item()
+    psnr = calculate_psnr(final_image, gt_cpu).item()
 
-    return final_image, psnr, history
+    return final_image, psnr, history, step_psnr_history
 
 
 def visualize(history, gt, psnr, save_path, plane_idx, diopter_val):
@@ -122,6 +134,60 @@ def visualize(history, gt, psnr, save_path, plane_idx, diopter_val):
     plt.savefig(save_path, dpi=100)
     plt.close()
     print(f"  Saved: {save_path}  (PSNR: {psnr:.2f} dB)")
+
+
+def save_step_psnr_csv(all_step_data, save_dir):
+    """모든 plane의 step별 PSNR을 하나의 CSV 표로 저장"""
+    csv_path = os.path.join(save_dir, 'step_psnr_table.csv')
+    if not all_step_data:
+        return csv_path
+
+    plane_keys = sorted(all_step_data.keys())
+    num_steps = len(all_step_data[plane_keys[0]])
+
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        header = ['step', 'eta']
+        for pk in plane_keys:
+            dv = float(DP_FOCAL[pk])
+            header.append(f'plane{pk:02d}_{dv:.1f}D_psnr')
+        writer.writerow(header)
+
+        for i in range(num_steps):
+            row = [
+                all_step_data[plane_keys[0]][i]['step'],
+                all_step_data[plane_keys[0]][i]['eta']
+            ]
+            for pk in plane_keys:
+                row.append(all_step_data[pk][i]['psnr'])
+            writer.writerow(row)
+
+    print(f"  Step PSNR table saved: {csv_path}")
+    return csv_path
+
+
+def plot_psnr_convergence(all_step_data, save_dir):
+    """step별 PSNR 수렴 그래프 생성"""
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+
+    for p_idx in sorted(all_step_data.keys()):
+        step_data = all_step_data[p_idx]
+        steps = [d['step'] for d in step_data]
+        psnrs = [d['psnr'] for d in step_data]
+        dv = float(DP_FOCAL[p_idx])
+        ax.plot(steps, psnrs, label=f'Plane {p_idx} ({dv:.1f}D)', linewidth=1.5)
+
+    ax.set_xlabel('GM Step', fontsize=12)
+    ax.set_ylabel('PSNR (dB)', fontsize=12)
+    ax.set_title('PSNR Convergence per GM Step', fontsize=14)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    plot_path = os.path.join(save_dir, 'psnr_convergence.png')
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    print(f"  PSNR convergence plot saved: {plot_path}")
 
 
 def main():
@@ -213,6 +279,7 @@ def main():
         json.dump(infer_config, f, indent=2)
 
     results = []
+    all_step_data = {}  # plane별 step PSNR 히스토리
 
     for p_idx in plane_indices:
         diopter_val = float(DP_FOCAL[p_idx])
@@ -234,10 +301,12 @@ def main():
         diopter = diopter.unsqueeze(0).to(device)
         gt = gt.unsqueeze(0).to(device)
 
-        final_image, psnr, history = generate_one_plane(
+        final_image, psnr, history, step_psnr_history = generate_one_plane(
             model, x, diopter, gt, device, gm_steps, gm_step_size,
             eta_min, eta_schedule, langevin_noise
         )
+
+        all_step_data[p_idx] = step_psnr_history
 
         save_path = os.path.join(out_subdir,
                                  f'scene{args.scene_idx}_plane{p_idx:02d}.png')
@@ -254,6 +323,11 @@ def main():
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2)
     print(f"\nResults saved to {results_path}")
+
+    # step별 PSNR 표 & 수렴 그래프 저장
+    if all_step_data:
+        save_step_psnr_csv(all_step_data, out_subdir)
+        plot_psnr_convergence(all_step_data, out_subdir)
 
     if len(results) > 1:
         avg_psnr = np.mean([r['psnr'] for r in results])
