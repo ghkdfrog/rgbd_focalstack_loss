@@ -26,7 +26,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from gm.model import SimpleCNN, SimpleCNNDeep, save_model_architecture
-from gm.config import get_parser_args
+from gm.config import parse_args
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 try:
@@ -260,7 +260,7 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
 # Main
 # ──────────────────────────────────────────────────────────────
 def main():
-    args = get_parser_args()
+    args = parse_args()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
