@@ -196,6 +196,67 @@ def validate(model, loader, device, gm_steps, gm_step_size,
 
 
 # ──────────────────────────────────────────────────────────────
+# PSNR Evaluation (실제 생성 품질 측정)
+# ──────────────────────────────────────────────────────────────
+def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
+                    eta_min=0.002, eta_schedule='constant', langevin_noise=False,
+                    eval_plane=20):
+    """Val set의 모든 scene에 대해 특정 plane을 생성하고 평균 PSNR을 반환.
+    
+    val_loss와 달리 실제 이미지 생성 품질을 측정하므로,
+    best model 판정에 더 신뢰할 수 있는 지표입니다.
+    """
+    model.eval()
+    psnr_list = []
+
+    # eval_plane에 해당하는 모든 match sample 찾기
+    eval_indices = []
+    for idx, (s, pp, qp) in enumerate(dataset._match_samples):
+        if qp == eval_plane:
+            eval_indices.append(idx)
+
+    if not eval_indices:
+        print(f"  WARNING: plane {eval_plane} not found in dataset")
+        return 0.0
+
+    for sample_idx in eval_indices:
+        x, diopter, targets, gt = dataset[sample_idx]
+        x = x.unsqueeze(0).to(device)
+        diopter = diopter.unsqueeze(0).to(device)
+        gt = gt.unsqueeze(0).to(device)
+        gt_cpu = gt.cpu().squeeze()
+
+        with torch.enable_grad():
+            current_image = torch.randn_like(gt).to(device)
+            N, C, H, W = x.shape
+
+            for step in range(gm_steps):
+                eta = get_eta(step, gm_steps, gm_step_size, eta_min, eta_schedule)
+                current_image.requires_grad_(True)
+                input_rgbd = x[:, :4, :, :]
+                if C > 7:
+                    input_tail = x[:, 7:, :, :]
+                    model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
+                else:
+                    model_input = torch.cat([input_rgbd, current_image], dim=1)
+
+                energy = model(model_input, diopter)
+                pred_grad = torch.autograd.grad(
+                    energy, current_image, torch.ones_like(energy),
+                    create_graph=False
+                )[0]
+
+                use_noise = langevin_noise and (step < gm_steps - 1)
+                current_image = langevin_step(current_image, pred_grad, eta, use_noise)
+
+        final_img = torch.clamp(current_image, 0, 1).cpu().squeeze()
+        psnr_val = calculate_psnr(final_img, gt_cpu).item()
+        psnr_list.append(psnr_val)
+
+    avg_psnr = np.mean(psnr_list)
+    return avg_psnr
+
+# ──────────────────────────────────────────────────────────────
 # Main
 # ──────────────────────────────────────────────────────────────
 def main():
@@ -276,6 +337,7 @@ def main():
         writer = SummaryWriter(os.path.join(output_dir, 'logs'))
 
     best_val_loss = float('inf')
+    best_val_psnr = 0.0  # PSNR 기반 best 모델 추적
 
     # ── Training loop ──
     for epoch in range(start_epoch, args.epochs + 1):
@@ -298,9 +360,18 @@ def main():
 
         print(f"Train Loss: {train_loss:.6f}  |  Val Loss: {val_loss:.6f}")
 
+        # ── Val PSNR 측정 (실제 생성 품질) ──
+        val_psnr = compute_val_psnr(
+            model, val_ds, device, args.gm_steps, args.gm_step_size,
+            args.eta_min, args.eta_schedule, args.langevin_noise,
+            eval_plane=20
+        )
+        print(f"Val PSNR (plane 20 avg): {val_psnr:.2f} dB")
+
         if writer:
             writer.add_scalar('train/loss', train_loss, epoch)
             writer.add_scalar('val/loss', val_loss, epoch)
+            writer.add_scalar('val/psnr', val_psnr, epoch)
 
         scheduler.step(val_loss)
 
@@ -316,6 +387,7 @@ def main():
             'langevin_noise': args.langevin_noise,
             'train_loss': train_loss,
             'val_loss': val_loss,
+            'val_psnr': val_psnr,
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:
@@ -324,7 +396,12 @@ def main():
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(ckpt, os.path.join(output_dir, 'best_model.pth'))
-            print(f"  ** New best model saved (val_loss={val_loss:.6f}) **")
+            print(f"  ** New best (loss) saved (val_loss={val_loss:.6f}) **")
+
+        if val_psnr > best_val_psnr:
+            best_val_psnr = val_psnr
+            torch.save(ckpt, os.path.join(output_dir, 'best_psnr_model.pth'))
+            print(f"  ** New best (PSNR) saved (val_psnr={val_psnr:.2f} dB) **")
 
         torch.save(ckpt, os.path.join(output_dir, 'latest.pth'))
 
@@ -338,8 +415,8 @@ def main():
     infer_ds = train_ds if args.single_scene_only else val_ds
     infer_steps = max(args.gm_steps, 50)
     print(f"Auto inference using {'train' if args.single_scene_only else 'val'} dataset ({len(infer_ds)} samples)")
-    for tag in ['best', 'latest']:
-        ckpt_path = os.path.join(output_dir, f'{tag}_model.pth' if tag == 'best' else f'{tag}.pth')
+    for tag in ['best', 'best_psnr', 'latest']:
+        ckpt_path = os.path.join(output_dir, f'{tag}_model.pth' if tag != 'latest' else f'{tag}.pth')
         if os.path.exists(ckpt_path):
             final_generation_check(model, infer_ds, device, output_dir, args,
                                    ckpt_path, tag, infer_steps)
