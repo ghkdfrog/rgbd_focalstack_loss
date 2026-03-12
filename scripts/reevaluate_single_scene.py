@@ -10,7 +10,7 @@ from glob import glob
 # 이 스크립트는 rgbd_focalstack_loss/ 디렉토리에서 실행되어야 합니다.
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN
+from gm.model import SimpleCNN, SimpleCNNDeep
 from gm.train import validate, get_eta, langevin_step
 from gm.infer import generate_one_plane, run_inference_for_tag, resolve_ckpt_paths
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
@@ -46,10 +46,25 @@ def reevaluate_run(run_dir, device='cuda', skip_inference=False):
         pass
     args = Args()
     args.__dict__.update(saved_args)
-    # infer.py의 run_inference_for_tag에서 args.run_dir, args.scene_idx 사용
-    args.run_dir = run_dir
-    if not hasattr(args, 'scene_idx'):
-        args.scene_idx = 0
+
+    # 오래된 run의 args.json에 없을 수 있는 필드들에 기본값 설정
+    defaults = {
+        'run_dir': run_dir,
+        'scene_idx': 0,
+        'energy_head': 'fc',
+        'eta_schedule': 'constant',
+        'eta_min': 0.002,
+        'langevin_noise': False,
+        'num_scenes': 0,
+        'arch': 'simple',
+        'generated_data_dir': None,
+    }
+    for key, val in defaults.items():
+        if not hasattr(args, key):
+            setattr(args, key, val)
+
+    if args.generated_data_dir is None:
+        args.generated_data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 
     # ── Dataset (Train set의 0번 씬으로 검증해야 함) ──
     use_coc = (args.diopter_mode == 'coc')
@@ -66,8 +81,13 @@ def reevaluate_run(run_dir, device='cuda', skip_inference=False):
                                              shuffle=False, num_workers=args.num_workers)
 
     # ── Model ──
-    model = SimpleCNN(diopter_mode=args.diopter_mode,
-                      energy_head=args.energy_head).to(device)
+    arch = getattr(args, 'arch', 'simple')
+    if arch == 'deep':
+        model = SimpleCNNDeep(diopter_mode=args.diopter_mode,
+                              energy_head=args.energy_head).to(device)
+    else:
+        model = SimpleCNN(diopter_mode=args.diopter_mode,
+                          energy_head=args.energy_head).to(device)
 
     # ── Checkpoint 리스트업 ──
     checkpoint_files = glob(os.path.join(run_dir, 'checkpoint_epoch_*.pth'))
