@@ -140,7 +140,7 @@ def reevaluate_run(run_dir, device='cuda', skip_inference=False):
             diopter = diopter.unsqueeze(0).to(device)
             gt = gt.unsqueeze(0).to(device)
 
-            final_image, psnr_val, _ = generate_one_plane(
+            final_image, psnr_val, _, _ = generate_one_plane(
                 model, x, diopter, gt, device, infer_steps, args.gm_step_size,
                 args.eta_min, args.eta_schedule, args.langevin_noise
             )
