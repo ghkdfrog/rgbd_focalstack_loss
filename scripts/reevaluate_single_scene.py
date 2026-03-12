@@ -47,9 +47,10 @@ def reevaluate_run(run_dir, device='cuda', skip_inference=False):
     args = Args()
     args.__dict__.update(saved_args)
 
-    # 오래된 run의 args.json에 없을 수 있는 필드들에 기본값 설정
+    # 오래된 run의 args.json에 없거나 null일 수 있는 필드들에 기본값 설정
+    # run_dir은 항상 현재 run_dir로 강제 설정 (args.json에 null로 저장되어 있을 수 있음)
+    args.run_dir = run_dir
     defaults = {
-        'run_dir': run_dir,
         'scene_idx': 0,
         'energy_head': 'fc',
         'eta_schedule': 'constant',
@@ -57,13 +58,12 @@ def reevaluate_run(run_dir, device='cuda', skip_inference=False):
         'langevin_noise': False,
         'num_scenes': 0,
         'arch': 'simple',
-        'generated_data_dir': None,
     }
     for key, val in defaults.items():
-        if not hasattr(args, key):
+        if not hasattr(args, key) or getattr(args, key) is None:
             setattr(args, key, val)
 
-    if args.generated_data_dir is None:
+    if not hasattr(args, 'generated_data_dir') or args.generated_data_dir is None:
         args.generated_data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 
     # ── Dataset (Train set의 0번 씬으로 검증해야 함) ──
