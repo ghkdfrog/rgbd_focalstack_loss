@@ -68,8 +68,11 @@ def get_parser():
                         help='Path to a specific run directory (for inference)')
     parser.add_argument('--scene_idx', type=int, default=0,
                         help='Scene index for inference')
-    parser.add_argument('--plane_idx', type=str, default='20',
+    parser.add_argument('--plane_idx', type=str, default='0,20,39',
                         help='Focal plane indices, comma-separated (e.g. 0,20,39 or -1 for all)')
+    parser.add_argument('--ckpt_tag', type=str, default='all',
+                        choices=['best', 'best_psnr', 'latest', 'all'],
+                        help='Which checkpoint to use: best, best_psnr, latest, or all (default: all)')
 
     return parser
 

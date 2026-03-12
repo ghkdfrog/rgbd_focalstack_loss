@@ -302,6 +302,10 @@ def main():
         num_scenes=args.num_scenes
     )
 
+    if args.single_scene_only:
+        print("💡 [Prototype Mode] Overfitting to a single SCENE (all focal planes)!")
+        val_ds = train_ds
+
     val_loader = DataLoader(val_ds, batch_size=args.batch_size,
                             shuffle=False, num_workers=args.num_workers)
 
@@ -449,6 +453,7 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
     print(f"  Checkpoint epoch: {ckpt_epoch}")
 
     target_planes = [0, 20, 39]  # 0.1D, 2.0D, 4.0D
+
     fig, axes = plt.subplots(len(target_planes), 2, figsize=(10, 5 * len(target_planes)))
     psnr_results = []
 
