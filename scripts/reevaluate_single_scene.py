@@ -89,8 +89,13 @@ def reevaluate_run(run_dir, device='cuda', skip_inference=False):
         model = SimpleCNN(diopter_mode=args.diopter_mode,
                           energy_head=args.energy_head).to(device)
 
-    # ── Checkpoint 리스트업 ──
-    checkpoint_files = glob(os.path.join(run_dir, 'checkpoint_epoch_*.pth'))
+    # ── Checkpoint 리스트업: best/best_psnr/latest + 마지막 3개 에폭만 ──
+    epoch_ckpts = sorted(
+        glob(os.path.join(run_dir, 'checkpoint_epoch_*.pth')),
+        key=lambda x: int(os.path.basename(x).split('_')[-1].split('.')[0])
+    )
+    # 마지막 3개만
+    checkpoint_files = epoch_ckpts[-3:]
 
     for extra_ckpt in ['best_model.pth', 'best_psnr_model.pth', 'latest.pth']:
         extra_path = os.path.join(run_dir, extra_ckpt)
