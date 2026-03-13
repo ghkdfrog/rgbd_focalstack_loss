@@ -56,7 +56,15 @@
 |:---|:---|:---:|---:|:---|
 | `0310_080631` | coc, conv1x1, cosine, 100ep, 5장 | **latest** | **20.80 dB** (20.2/21.5/20.7) | conv1x1이 multi에서 안정적 |
 | `0310_075915` | coc, fc, cosine, 100ep, 5장 | **latest** | **19.88 dB** (19.2/20.7/19.7) | fc가 multi에서는 conv1x1보다 낮음 |
-| `0311_142349` | coc, fc, constant, **5ep**, 전체 | **best** | **20.32 dB** (20.1/20.3/20.5) | 5 epoch만→단기 학습 |
+| `0311_142349` | coc, fc, constant, **5ep**, 전체 | **best_psnr** | **21.46 dB** (20.7/21.8/21.9) | 전체(90) scene 학습 (5 epoch). Best PSNR 기준 |
+
+### ⏳ Currently Running (진행 중)
+
+| Run | 설정 | 상태 | 비고 |
+|:---|:---|:---:|:---|
+| `0312_134650` | coc, simple, **linear**, 100ep, 5장 | **Running** | multi-scene(5장) + linear eta 스케줄 테스트 |
+| `0312_120940` | coc, **deep**(10L), fc, constant, 100ep | **Running** | scene 0. 기존 모델에서 이어서 학습 (resume) |
+| `0312_120804` | coc, **deep**(10L), fc, **linear**, 100ep | **Running** | scene 0. Deep 구조 + linear 스케줄 적용 테스트 |
 
 ---
 
@@ -81,4 +89,4 @@
 ### 5. 현재 미해결 과제
 - Multi-scene 학습이 아직 **충분한 에폭으로 돌리지 않음** (5ep only)
 - Deep 아키텍처도 50ep single-scene만 시도 → 더 긴 학습 필요
-- Langevin noise 옵션은 아직 **enabled 상태로 실험하지 않음** (전부 `noise=False`)
+- Langevin noise 적용 후 스케일 문제: `noise=True`로 실험(`0312_120655`)을 진행하였으나 약 20 epoch 후 **취소됨**. `step_size`(`eta`)에 비해 노이즈 크기(`sqrt(2*eta)`)가 과도하게 커서 노이즈가 지배적이 되어 의미 없는 Loss/PSNR이 도출되는 문제 발견. 보정 필요.

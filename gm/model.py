@@ -128,6 +128,60 @@ class SimpleCNNDeep(nn.Module):
         return x
 
 
+class SimpleCNNStride(nn.Module):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc'):
+        super(SimpleCNNStride, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+
+        # diopter_mode에 따라 입력 채널 수 결정
+        if diopter_mode == 'spatial':
+            in_ch = input_channels + 1
+        elif diopter_mode == 'coc':
+            in_ch = input_channels + 1
+        else:
+            in_ch = input_channels
+
+        # Conv Layers: 초반 1~3번째 레이어는 해상도(stride=1)를 유지하여 세밀한 로컬 텍스처(엣지 등) 특징 추출
+        self.conv1 = nn.Conv2d(in_ch, 16, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)
+        
+        # 중후반 4~5번째 레이어에서 stride=2 를 사용하여 Receptive Field를 확장하고 글로벌 컨텍스트(광대역 블러 등)를 파악
+        self.conv4 = nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1) # 1/2 downsample
+        self.conv5 = nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1) # 1/4 downsample
+
+        # Energy output head
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            # 입력 512x512 해상도 가정 시 1/4 로 줄어들어 128x128 이 됨
+            self.fc = nn.Linear(256 * 128 * 128, 1)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        if self.diopter_mode == 'spatial':
+            diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x = torch.cat([x, diopter_map], dim=1)
+        elif self.diopter_mode == 'coc':
+            pass
+
+        x = F.relu(self.conv1(x))
+        x = F.relu(self.conv2(x))
+        x = F.relu(self.conv3(x))
+        x = F.relu(self.conv4(x))
+        x = F.relu(self.conv5(x))
+
+        if self.energy_head == 'conv1x1':
+            x = self.conv_energy(x)           # (N, 1, H/4, W/4)
+            x = torch.sum(x, dim=(2, 3))      # (N, 1) — 공간 에너지 합산
+        else:  # 'fc'
+            x = torch.flatten(x, 1)
+            x = self.fc(x)
+        return x
+
+
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""
     lines = []

@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride
 from gm.config import parse_args
 from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
@@ -43,6 +43,8 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
 
     if arch == 'deep':
         model = SimpleCNNDeep(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
+    elif arch == 'stride':
+        model = SimpleCNNStride(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     else:
         model = SimpleCNN(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
 
