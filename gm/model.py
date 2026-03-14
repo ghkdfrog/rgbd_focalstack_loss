@@ -14,6 +14,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class ResidualBlock(nn.Module):
+    """
+    기본적인 2-Conv Residual Block. 
+    공간 해상도와 채널 수를 유지합니다 (stride=1).
+    """
+    def __init__(self, channels):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.conv1(x))
+        out = self.conv2(out)
+        out += residual
+        return F.relu(out)
+
+
+
 class SimpleCNN(nn.Module):
     def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc'):
         super(SimpleCNN, self).__init__()
@@ -176,6 +195,64 @@ class SimpleCNNStride(nn.Module):
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)           # (N, 1, H/4, W/4)
             x = torch.sum(x, dim=(2, 3))      # (N, 1) — 공간 에너지 합산
+        else:  # 'fc'
+            x = torch.flatten(x, 1)
+            x = self.fc(x)
+        return x
+
+
+class SimpleResNet(nn.Module):
+    """
+    stride=1 을 유지하면서 깊이를 쌓기 위한 ResNet 구조.
+    - 입력 채널을 128 (또는 256)까지 확장한 후 Residual Block 반복
+    - fc 에너지 헤드 유지 가능
+    """
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4):
+        super(SimpleResNet, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+
+        # diopter_mode에 따라 입력 채널 수 결정
+        if diopter_mode == 'spatial':
+            in_ch = input_channels + 1
+        elif diopter_mode == 'coc':
+            in_ch = input_channels + 1
+        else:
+            in_ch = input_channels
+
+        # 초기 특징 추출 (해상도 유지)
+        self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        
+        # Residual Blocks 쌓기 (stride=1 유지, 채널 128)
+        self.res_blocks = nn.Sequential(
+            *[ResidualBlock(128) for _ in range(num_blocks)]
+        )
+
+        # Energy output head
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(128, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            # 512x512 해상도 유지 시 파라미터가 너무 커지므로 128 채널로 FC 레이어 구성
+            self.fc = nn.Linear(128 * 512 * 512, 1)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        if self.diopter_mode == 'spatial':
+            diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x = torch.cat([x, diopter_map], dim=1)
+        elif self.diopter_mode == 'coc':
+            pass
+
+        x = F.relu(self.conv_in(x))
+        x = F.relu(self.conv_expand(x))
+        
+        x = self.res_blocks(x)
+
+        if self.energy_head == 'conv1x1':
+            x = self.conv_energy(x)           # (N, 1, H, W)
+            x = torch.sum(x, dim=(2, 3))      # (N, 1) 스칼라 합산
         else:  # 'fc'
             x = torch.flatten(x, 1)
             x = self.fc(x)

@@ -41,11 +41,14 @@
 
 | Run | 설정 | Best Epoch | Best PSNR (avg p0/p20/p39) | 비고 |
 |:---|:---|:---:|---:|:---|
+| `0313_133317` | coc, **stride**, fc, **linear**, 100ep, 50steps | **13 ep** | **19.51 dB** (19.5/19.7/19.4) | latest(100ep) 19.74 dB. stride 구조 변경으로 인한 성능 하락(25.4 → 19.5dB) |
 | `0310_011629` | coc, fc, **linear**, 100ep, 50steps | **100 ep** | **25.40 dB** (24.2/26.1/25.8) | 🥇 최고 성능. 100ep까지 하락 없이 계속 상승 (plateau) |
 | `0310_011608` | coc, fc, **cosine**, 100ep, 50steps | **100 ep** | **25.27 dB** (24.4/26.1/25.2) | 🥈 cosine도 100ep까지 하락 없이 안정적 수렴 |
 | `0309_084426` | coc, fc, constant, 100ep, 100steps | **latest** | **25.13 dB** (24.3/26.9/24.2) | p20 단독 최고(26.9). 특정 에폭에 피크 |
 | `0309_175036` | coc, fc, constant, 100ep, 50steps | **39 ep** | **24.91 dB** (24.0/25.9/24.8) | 39ep에 피크 달성 후 100ep까지 **2dB 폭락** (오버피팅) |
 | `0311_191411` | coc, fc, constant, **deep**(10L), 50ep | **40 ep** | **22.95 dB** (21.5/23.2/24.2) | 40ep에서 피크 후 50ep까지 유지됨 (plateau 도달) |
+| `0312_120940` | coc, fc, constant, **deep**(10L), 100ep| **53 ep** | **23.04 dB** (22.5/23.0/23.6) | `191411`에서 resume 진행. 100ep 완료. 53ep 이후 정체/소폭 하락 (수렴) |
+| `0313_041643` | coc, fc, **linear**, **deep**(10L), 50ep| **26 ep** | **23.75 dB** (23.0/23.8/24.4) | `120804` (중단됨)에서 resume. 50ep 완료. Deep 구조에서도 linear가 constant보다 성능이 높음 |
 | `0308_212501` | coc, fc, constant, 50ep, 100steps | **latest** | **22.69 dB** (22.4/23.7/22.0) | 50ep에서 점진적 상승 중 종료 |
 | `0307_232125` | **spatial**, fc, constant, 100ep, 50steps | **latest** | **18.59 dB** (18.7/19.4/17.6) | spatial 모드는 성능 불리 |
 | `0309_174409` | coc, **conv1x1**, constant, 100ep | **best** | **16.39 dB** → latest **붕괴** | conv1x1은 불안정(latest -2dB) |
@@ -57,14 +60,9 @@
 | `0310_080631` | coc, conv1x1, cosine, 100ep, 5장 | **latest** | **20.80 dB** (20.2/21.5/20.7) | conv1x1이 multi에서 안정적 |
 | `0310_075915` | coc, fc, cosine, 100ep, 5장 | **latest** | **19.88 dB** (19.2/20.7/19.7) | fc가 multi에서는 conv1x1보다 낮음 |
 | `0311_142349` | coc, fc, constant, **5ep**, 전체 | **best_psnr** | **21.46 dB** (20.7/21.8/21.9) | 전체(90) scene 학습 (5 epoch). Best PSNR 기준 |
+| `0312_134650` | coc, fc, **linear**, 100ep, 5장 | **14 ep** | **20.97 dB** (21.0/21.1/20.8) | 100ep 완료. 초반 피크(14ep) 후 성능 하락. Multi-scene에서 linear 감쇠가 불안정할 수 있음 |
 
-### ⏳ Currently Running (진행 중)
 
-| Run | 설정 | 상태 | 비고 |
-|:---|:---|:---:|:---|
-| `0312_134650` | coc, simple, **linear**, 100ep, 5장 | **Running** | multi-scene(5장) + linear eta 스케줄 테스트 |
-| `0312_120940` | coc, **deep**(10L), fc, constant, 100ep | **Running** | scene 0. 기존 모델에서 이어서 학습 (resume) |
-| `0312_120804` | coc, **deep**(10L), fc, **linear**, 100ep | **Running** | scene 0. Deep 구조 + linear 스케줄 적용 테스트 |
 
 ---
 

@@ -20,8 +20,8 @@ def get_parser():
 
     # Model
     parser.add_argument('--arch', type=str, default='simple',
-                        choices=['simple', 'deep', 'stride'],
-                        help='Model architecture: simple (5-layer), deep (10-layer), or stride (downsampling for larger receptive field)')
+                        choices=['simple', 'deep', 'stride', 'resnet'],
+                        help='Model architecture: simple (5-layer), deep (10-layer), stride (downsampling), or resnet (ResNet blocks, stride 1)')
     parser.add_argument('--diopter_mode', type=str, default='coc',
                         choices=['spatial', 'coc'],
                         help='Diopter conditioning mode')
