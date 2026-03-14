@@ -222,19 +222,19 @@ class SimpleResNet(nn.Module):
 
         # 초기 특징 추출 (해상도 유지)
         self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
-        self.conv_expand = nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1)
         
-        # Residual Blocks 쌓기 (stride=1 유지, 채널 128)
+        # Residual Blocks 쌓기 (stride=1 유지, 채널 256)
         self.res_blocks = nn.Sequential(
-            *[ResidualBlock(128) for _ in range(num_blocks)]
+            *[ResidualBlock(256) for _ in range(num_blocks)]
         )
 
         # Energy output head
         if energy_head == 'conv1x1':
-            self.conv_energy = nn.Conv2d(128, 1, kernel_size=1, stride=1, padding=0)
+            self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
-            # 512x512 해상도 유지 시 파라미터가 너무 커지므로 128 채널로 FC 레이어 구성
-            self.fc = nn.Linear(128 * 512 * 512, 1)
+            # 512x512 해상도 유지 시 파라미터 맞추기 위해 256 채널로 FC 레이어 구성 (기존 SimpleCNN과 동일: 약 67M)
+            self.fc = nn.Linear(256 * 512 * 512, 1)
 
     def forward(self, x, diopter):
         N, C, H, W = x.shape
