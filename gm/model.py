@@ -334,11 +334,8 @@ class ConvNeXtBlock(nn.Module):
 
 
 class SimpleConvNeXt(nn.Module):
-    """
-    SimpleCNN의 흐름(점진적 채널 증가)을 모방한 ConvNeXt.
-    해상도(512x512) 유지, 파라미터 약 68M 달성.
-    """
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc'):
+    # 1. 괄호 안에 num_blocks=4 를 다시 추가해 줍니다!
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4):
         super(SimpleConvNeXt, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -348,36 +345,34 @@ class SimpleConvNeXt(nn.Module):
         else:
             in_ch = input_channels
 
-        # 1. 초기 특징 추출 (SimpleCNN의 conv1, conv2 역할)
         self.stem = nn.Conv2d(in_ch, 32, kernel_size=3, stride=1, padding=1)
         
-        # 2. 점진적 채널 증가 + ConvNeXt Block (메모리 절약의 핵심)
-        # Stage 1: 32 -> 64
         self.stage1 = nn.Sequential(
             nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
             nn.GELU(),
             ConvNeXtBlock(channels=64, expansion=4)
         )
         
-        # Stage 2: 64 -> 128
         self.stage2 = nn.Sequential(
             nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
             nn.GELU(),
             ConvNeXtBlock(channels=128, expansion=4)
         )
         
-        # Stage 3: 128 -> 256 (여기서 256 채널 완성)
-        self.stage3 = nn.Sequential(
+        # 2. Stage 3 수정: 전달받은 num_blocks 만큼 ConvNeXt 블록을 반복해서 쌓습니다.
+        stage3_layers = [
             nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.GELU(),
-            ConvNeXtBlock(channels=256, expansion=4)
-        )
+            nn.GELU()
+        ]
+        for _ in range(num_blocks):
+            stage3_layers.append(ConvNeXtBlock(channels=256, expansion=4))
+            
+        self.stage3 = nn.Sequential(*stage3_layers)
 
-        # 3. Energy output head
+        # 3. Energy output head (그대로 유지)
         if energy_head == 'conv1x1':
             self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
-            # (256 * 512 * 512) 차원을 입력받으므로 정확히 67.1M 파라미터 확보
             self.fc = nn.Linear(256 * 512 * 512, 1)
 
     def forward(self, x, diopter):
