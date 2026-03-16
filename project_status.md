@@ -32,18 +32,19 @@
 
 ---
 
-## 실험 결과 요약 (22개 run)
+## 실험 결과 요약 (23개 run)
 
 ### 🏆 Single-Scene Prototype Runs (scene 0 오버피팅)
 
 > [!IMPORTANT]
-> **Best PSNR: ~25.4 dB** — `linear` eta 스케줄, 100 epochs, 50 GM steps
+> **Best PSNR: ~27.86 dB** — **ResNet**, `linear` eta 스케줄, 50 GM steps (32 epochs 진행 중)
 
 | Run | 설정 | Best Epoch | Best PSNR (avg p0/p20/p39) | 비고 |
 |:---|:---|:---:|---:|:---|
+| `0314_160511` | coc, **resnet**, **linear**, 100ep, 50steps | **29 ep** | **27.86 dB** (26.6/29.9/27.1) | 🥇 새로운 최고 성능 (기존 대비 약 +2.5dB 향상). 현재 32ep까지 진행됨 |
 | `0313_133317` | coc, **stride**, fc, **linear**, 100ep, 50steps | **13 ep** | **19.51 dB** (19.5/19.7/19.4) | latest(100ep) 19.74 dB. stride 구조 변경으로 인한 성능 하락(25.4 → 19.5dB) |
-| `0310_011629` | coc, fc, **linear**, 100ep, 50steps | **100 ep** | **25.40 dB** (24.2/26.1/25.8) | 🥇 최고 성능. 100ep까지 하락 없이 계속 상승 (plateau) |
-| `0310_011608` | coc, fc, **cosine**, 100ep, 50steps | **100 ep** | **25.27 dB** (24.4/26.1/25.2) | 🥈 cosine도 100ep까지 하락 없이 안정적 수렴 |
+| `0310_011629` | coc, fc, **linear**, 100ep, 50steps | **100 ep** | **25.40 dB** (24.2/26.1/25.8) | 🥈 이전 최고 성능. 100ep까지 하락 없이 계속 상승 (plateau) |
+| `0310_011608` | coc, fc, **cosine**, 100ep, 50steps | **100 ep** | **25.27 dB** (24.4/26.1/25.2) | 🥉 cosine도 100ep까지 하락 없이 안정적 수렴 |
 | `0309_084426` | coc, fc, constant, 100ep, 100steps | **latest** | **25.13 dB** (24.3/26.9/24.2) | p20 단독 최고(26.9). 특정 에폭에 피크 |
 | `0309_175036` | coc, fc, constant, 100ep, 50steps | **39 ep** | **24.91 dB** (24.0/25.9/24.8) | 39ep에 피크 달성 후 100ep까지 **2dB 폭락** (오버피팅) |
 | `0311_191411` | coc, fc, constant, **deep**(10L), 50ep | **40 ep** | **22.95 dB** (21.5/23.2/24.2) | 40ep에서 피크 후 50ep까지 유지됨 (plateau 도달) |
@@ -77,6 +78,7 @@
 - 200스텝으로 과도하게 늘리면 PSNR이 유지되거나 오히려 하락 (over-Langevin 현상)
 
 ### 3. 아키텍처 비교
+- **ResNet**: **최고 성능 (27.86 dB) 달성**. 기존 SimpleCNN 대비 압도적인 성능 향상(+2.5dB).
 - **SimpleCNNDeep (10L)**: single-scene에서 22.95 dB로 SimpleCNN(5L) 대비 낮음. 50ep 부족할 수 있음
 - **conv1x1 head**: single-scene에서 불안정하지만, multi-scene에서는 fc보다 오히려 안정적
 

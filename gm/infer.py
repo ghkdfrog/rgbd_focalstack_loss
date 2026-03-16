@@ -83,7 +83,7 @@ def resolve_ckpt_paths(run_dir, ckpt_tag):
 
 def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                        eta_min=0.002, eta_schedule='constant', use_langevin_noise=False):
-    """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR을 반환"""
+    """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR/energy를 반환"""
     N, C, H, W = x.shape
     step_psnr_history = []
     gt_cpu = gt.cpu().squeeze()  # step별 PSNR 계산용 (미리 CPU로)
@@ -104,6 +104,7 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                 model_input = torch.cat([input_rgbd, current_image], dim=1)
 
             energy = model(model_input, diopter)
+            energy_val = energy.item()  # 모델 출력(에너지) 스칼라 값 기록
 
             grad = torch.autograd.grad(
                 outputs=energy,
@@ -116,14 +117,15 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
             noise = use_langevin_noise and (step < gm_steps - 1)
             current_image = langevin_step(current_image, grad, eta, noise)
 
-            # step별 PSNR 기록
+            # step별 PSNR + energy 기록
             with torch.no_grad():
                 step_img = torch.clamp(current_image, 0.0, 1.0).cpu().squeeze()
                 step_psnr = calculate_psnr(step_img, gt_cpu).item()
                 step_psnr_history.append({
                     'step': step + 1,
                     'eta': round(eta, 6),
-                    'psnr': round(step_psnr, 4)
+                    'psnr': round(step_psnr, 4),
+                    'energy': round(energy_val, 6)
                 })
 
             if (step + 1) % 10 == 0 or step == gm_steps - 1:
@@ -160,7 +162,7 @@ def visualize(history, gt, psnr, save_path, plane_idx, diopter_val):
 
 
 def save_step_psnr_csv(all_step_data, save_dir):
-    """모든 plane의 step별 PSNR을 하나의 CSV 표로 저장"""
+    """모든 plane의 step별 PSNR + energy를 하나의 CSV 표로 저장"""
     csv_path = os.path.join(save_dir, 'step_psnr_table.csv')
     if not all_step_data:
         return csv_path
@@ -174,6 +176,7 @@ def save_step_psnr_csv(all_step_data, save_dir):
         for pk in plane_keys:
             dv = float(DP_FOCAL[pk])
             header.append(f'plane{pk:02d}_{dv:.1f}D_psnr')
+            header.append(f'plane{pk:02d}_{dv:.1f}D_energy')
         writer.writerow(header)
 
         for i in range(num_steps):
@@ -183,6 +186,7 @@ def save_step_psnr_csv(all_step_data, save_dir):
             ]
             for pk in plane_keys:
                 row.append(all_step_data[pk][i]['psnr'])
+                row.append(all_step_data[pk][i].get('energy', ''))
             writer.writerow(row)
 
     print(f"  Step PSNR table saved: {csv_path}")
@@ -211,6 +215,55 @@ def plot_psnr_convergence(all_step_data, save_dir):
     plt.savefig(plot_path, dpi=150)
     plt.close()
     print(f"  PSNR convergence plot saved: {plot_path}")
+
+
+def plot_energy_per_plane(all_step_data, save_dir):
+    """plane별 energy 그래프 생성: 개별 plane 그래프 + 전체 오버레이 그래프"""
+    if not all_step_data:
+        return
+
+    energy_dir = os.path.join(save_dir, 'energy_plots')
+    os.makedirs(energy_dir, exist_ok=True)
+
+    # ── 1) 개별 plane 그래프 ──
+    for p_idx in sorted(all_step_data.keys()):
+        step_data = all_step_data[p_idx]
+        steps = [d['step'] for d in step_data]
+        energies = [d.get('energy', 0) for d in step_data]
+        dv = float(DP_FOCAL[p_idx])
+
+        fig, ax = plt.subplots(1, 1, figsize=(10, 5))
+        ax.plot(steps, energies, color='#e74c3c', linewidth=1.8, marker='o', markersize=2.5)
+        ax.set_xlabel('GM Step', fontsize=12)
+        ax.set_ylabel('Model Output (Energy)', fontsize=12)
+        ax.set_title(f'Energy per Step — Plane {p_idx} ({dv:.1f}D)', fontsize=14)
+        ax.grid(True, alpha=0.3)
+        plt.tight_layout()
+
+        plot_path = os.path.join(energy_dir, f'energy_plane{p_idx:02d}.png')
+        plt.savefig(plot_path, dpi=150)
+        plt.close()
+
+    # ── 2) 전체 오버레이 그래프 ──
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    for p_idx in sorted(all_step_data.keys()):
+        step_data = all_step_data[p_idx]
+        steps = [d['step'] for d in step_data]
+        energies = [d.get('energy', 0) for d in step_data]
+        dv = float(DP_FOCAL[p_idx])
+        ax.plot(steps, energies, label=f'Plane {p_idx} ({dv:.1f}D)', linewidth=1.5)
+
+    ax.set_xlabel('GM Step', fontsize=12)
+    ax.set_ylabel('Model Output (Energy)', fontsize=12)
+    ax.set_title('Energy per Step (All Planes)', fontsize=14)
+    ax.legend(fontsize=10)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+
+    overlay_path = os.path.join(save_dir, 'energy_convergence.png')
+    plt.savefig(overlay_path, dpi=150)
+    plt.close()
+    print(f"  Energy plots saved: {energy_dir}/  +  {overlay_path}")
 
 
 def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
@@ -291,10 +344,11 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
     with open(results_path, 'w') as f:
         json.dump(results, f, indent=2)
 
-    # step별 PSNR 표 & 수렴 그래프 저장
+    # step별 PSNR/energy 표 & 수렴 그래프 저장
     if all_step_data:
         save_step_psnr_csv(all_step_data, out_subdir)
         plot_psnr_convergence(all_step_data, out_subdir)
+        plot_energy_per_plane(all_step_data, out_subdir)
 
     if len(results) > 0:
         avg_psnr = np.mean([r['psnr'] for r in results])
