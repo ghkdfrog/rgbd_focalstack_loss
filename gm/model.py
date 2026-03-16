@@ -308,69 +308,76 @@ class SEResidualBlock(nn.Module):
 
 class ConvNeXtBlock(nn.Module):
     """
-    ConvNeXt Block.
-    7x7 depthwise conv로 넓은 Receptive Field를 확보하며,
-    ResidualBlock(약 1.18M)과 유사한 파라미터 수를 맞추기 위해 
-    Pointwise Conv의 확장 비율(expansion)을 9로 설정합니다.
+    표준 ConvNeXt Block (expansion=4)
+    메모리 폭발을 막기 위해 expansion을 9에서 4로 줄였습니다.
     """
-    def __init__(self, channels, expansion=9):
+    def __init__(self, channels, expansion=4):
         super(ConvNeXtBlock, self).__init__()
-        # 7x7 Depthwise Conv: 넓은 범위(블러)를 가벼운 파라미터로 관찰
         self.dwconv = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
         self.norm = nn.LayerNorm(channels, eps=1e-6)
         
-        # Pointwise Conv (Inverted Bottleneck 구조)
+        # expansion=4로 설정하여 VRAM 사용량을 대폭 낮춤
         self.pwconv1 = nn.Linear(channels, expansion * channels)
-        self.act = nn.GELU()  # ReLU 대신 GELU 사용
+        self.act = nn.GELU()
         self.pwconv2 = nn.Linear(expansion * channels, channels)
 
     def forward(self, x):
         residual = x
         x = self.dwconv(x)
-        # LayerNorm과 Linear 작동을 위해 채널 차원 이동
         x = x.permute(0, 2, 3, 1) 
         x = self.norm(x)
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
-        x = x.permute(0, 3, 1, 2) # 다시 NCHW 복구
-        x = residual + x
-        return x
+        x = x.permute(0, 3, 1, 2)
+        return residual + x
 
 
 class SimpleConvNeXt(nn.Module):
     """
-    Stride=1을 유지하면서 파라미터 수를 SimpleResNet과 동일하게 맞춘 ConvNeXt 구조.
-    - 기존 ResidualBlock과 동등한 파라미터 수(~1.18M)를 갖도록 
-      expansion=9를 기본값으로 사용합니다.
+    SimpleCNN의 흐름(점진적 채널 증가)을 모방한 ConvNeXt.
+    해상도(512x512) 유지, 파라미터 약 68M 달성.
     """
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc'):
         super(SimpleConvNeXt, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
 
-        # diopter_mode에 따라 입력 채널 수 결정
-        if diopter_mode == 'spatial':
-            in_ch = input_channels + 1
-        elif diopter_mode == 'coc':
+        if diopter_mode == 'spatial' or diopter_mode == 'coc':
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
 
-        # 초기 특징 추출 (해상도 유지)
-        self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
-        self.conv_expand = nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1)
+        # 1. 초기 특징 추출 (SimpleCNN의 conv1, conv2 역할)
+        self.stem = nn.Conv2d(in_ch, 32, kernel_size=3, stride=1, padding=1)
         
-        # ConvNeXt Blocks 쌓기 (stride=1 유지, 채널 256, expansion=9)
-        self.convnext_blocks = nn.Sequential(
-            *[ConvNeXtBlock(channels=256, expansion=9) for _ in range(num_blocks)]
+        # 2. 점진적 채널 증가 + ConvNeXt Block (메모리 절약의 핵심)
+        # Stage 1: 32 -> 64
+        self.stage1 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
+            ConvNeXtBlock(channels=64, expansion=4)
+        )
+        
+        # Stage 2: 64 -> 128
+        self.stage2 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
+            ConvNeXtBlock(channels=128, expansion=4)
+        )
+        
+        # Stage 3: 128 -> 256 (여기서 256 채널 완성)
+        self.stage3 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
+            nn.GELU(),
+            ConvNeXtBlock(channels=256, expansion=4)
         )
 
-        # Energy output head
+        # 3. Energy output head
         if energy_head == 'conv1x1':
             self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
-            # 512x512 해상도 유지 시 파라미터 맞추기 위해 256 채널로 FC 레이어 구성
+            # (256 * 512 * 512) 차원을 입력받으므로 정확히 67.1M 파라미터 확보
             self.fc = nn.Linear(256 * 512 * 512, 1)
 
     def forward(self, x, diopter):
@@ -382,17 +389,18 @@ class SimpleConvNeXt(nn.Module):
         elif self.diopter_mode == 'coc':
             pass
 
-        x = F.relu(self.conv_in(x))
-        x = F.relu(self.conv_expand(x))
-        
-        x = self.convnext_blocks(x)
+        x = F.relu(self.stem(x))
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
 
         if self.energy_head == 'conv1x1':
-            x = self.conv_energy(x)           # (N, 1, H, W)
-            x = torch.sum(x, dim=(2, 3))      # (N, 1) 스칼라 합산
+            x = self.conv_energy(x)
+            x = torch.sum(x, dim=(2, 3))
         else:  # 'fc'
             x = torch.flatten(x, 1)
             x = self.fc(x)
+            
         return x
 
 
