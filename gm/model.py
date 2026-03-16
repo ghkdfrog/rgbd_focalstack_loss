@@ -12,6 +12,7 @@ SimpleCNN Energy-Based Model for Gradient Matching
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint  # ✅ 1. 체크포인트 임포트
 
 
 class ResidualBlock(nn.Module):
@@ -387,7 +388,16 @@ class SimpleConvNeXt(nn.Module):
         x = F.relu(self.stem(x))
         x = self.stage1(x)
         x = self.stage2(x)
-        x = self.stage3(x)
+        
+        # ✅ 2. 가장 메모리를 많이 먹는 Stage 3에 Gradient Checkpointing 적용!
+        # 기존: x = self.stage3(x) 
+        # 변경: 블록을 하나씩 꺼내서 checkpoint로 감싸서 실행합니다.
+        for module in self.stage3:
+            # 텐서가 gradient를 요구할 때만(학습 중일 때만) checkpoint 작동
+            if x.requires_grad:
+                x = checkpoint(module, x, use_reentrant=False)
+            else:
+                x = module(x)
 
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)
