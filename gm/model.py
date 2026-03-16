@@ -259,6 +259,143 @@ class SimpleResNet(nn.Module):
         return x
 
 
+class DilatedResidualBlock(nn.Module):
+    """
+    공간 해상도를 유지하면서 넓은 Receptive Field를 보기 위한 팽창 합성곱 블록
+    """
+    def __init__(self, channels, dilation=2):
+        super(DilatedResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, 
+                               padding=dilation, dilation=dilation)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.conv1(x))
+        out = self.conv2(out)
+        out += residual
+        return F.relu(out)
+
+
+class SEResidualBlock(nn.Module):
+    """
+    특징 채널(Coc 조건 등)에 가중치를 주는 Squeeze-and-Excitation 블록
+    """
+    def __init__(self, channels, reduction=16):
+        super(SEResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        
+        self.se = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(channels, channels // reduction, 1),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels // reduction, channels, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        residual = x
+        out = F.relu(self.conv1(x))
+        out = self.conv2(out)
+        
+        se_weight = self.se(out)
+        out = out * se_weight
+        
+        out += residual
+        return F.relu(out)
+
+
+class ConvNeXtBlock(nn.Module):
+    """
+    ConvNeXt Block.
+    7x7 depthwise conv로 넓은 Receptive Field를 확보하며,
+    ResidualBlock(약 1.18M)과 유사한 파라미터 수를 맞추기 위해 
+    Pointwise Conv의 확장 비율(expansion)을 9로 설정합니다.
+    """
+    def __init__(self, channels, expansion=9):
+        super(ConvNeXtBlock, self).__init__()
+        # 7x7 Depthwise Conv: 넓은 범위(블러)를 가벼운 파라미터로 관찰
+        self.dwconv = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
+        self.norm = nn.LayerNorm(channels, eps=1e-6)
+        
+        # Pointwise Conv (Inverted Bottleneck 구조)
+        self.pwconv1 = nn.Linear(channels, expansion * channels)
+        self.act = nn.GELU()  # ReLU 대신 GELU 사용
+        self.pwconv2 = nn.Linear(expansion * channels, channels)
+
+    def forward(self, x):
+        residual = x
+        x = self.dwconv(x)
+        # LayerNorm과 Linear 작동을 위해 채널 차원 이동
+        x = x.permute(0, 2, 3, 1) 
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.pwconv2(x)
+        x = x.permute(0, 3, 1, 2) # 다시 NCHW 복구
+        x = residual + x
+        return x
+
+
+class SimpleConvNeXt(nn.Module):
+    """
+    Stride=1을 유지하면서 파라미터 수를 SimpleResNet과 동일하게 맞춘 ConvNeXt 구조.
+    - 기존 ResidualBlock과 동등한 파라미터 수(~1.18M)를 갖도록 
+      expansion=9를 기본값으로 사용합니다.
+    """
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4):
+        super(SimpleConvNeXt, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+
+        # diopter_mode에 따라 입력 채널 수 결정
+        if diopter_mode == 'spatial':
+            in_ch = input_channels + 1
+        elif diopter_mode == 'coc':
+            in_ch = input_channels + 1
+        else:
+            in_ch = input_channels
+
+        # 초기 특징 추출 (해상도 유지)
+        self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1)
+        
+        # ConvNeXt Blocks 쌓기 (stride=1 유지, 채널 256, expansion=9)
+        self.convnext_blocks = nn.Sequential(
+            *[ConvNeXtBlock(channels=256, expansion=9) for _ in range(num_blocks)]
+        )
+
+        # Energy output head
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            # 512x512 해상도 유지 시 파라미터 맞추기 위해 256 채널로 FC 레이어 구성
+            self.fc = nn.Linear(256 * 512 * 512, 1)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        if self.diopter_mode == 'spatial':
+            diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x = torch.cat([x, diopter_map], dim=1)
+        elif self.diopter_mode == 'coc':
+            pass
+
+        x = F.relu(self.conv_in(x))
+        x = F.relu(self.conv_expand(x))
+        
+        x = self.convnext_blocks(x)
+
+        if self.energy_head == 'conv1x1':
+            x = self.conv_energy(x)           # (N, 1, H, W)
+            x = torch.sum(x, dim=(2, 3))      # (N, 1) 스칼라 합산
+        else:  # 'fc'
+            x = torch.flatten(x, 1)
+            x = self.fc(x)
+        return x
+
+
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""
     lines = []

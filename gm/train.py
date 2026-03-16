@@ -25,7 +25,7 @@ from tqdm import tqdm
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, save_model_architecture
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, save_model_architecture
 from gm.config import parse_args
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
@@ -303,7 +303,7 @@ def main():
     )
 
     if args.single_scene_only:
-        print("💡 [Prototype Mode] Overfitting to a single SCENE (all focal planes)!")
+        print("[Prototype Mode] Overfitting to a single SCENE (all focal planes)!")
         val_ds = train_ds
 
     val_loader = DataLoader(val_ds, batch_size=args.batch_size,
@@ -324,6 +324,13 @@ def main():
         ).to(device)
     elif args.arch == 'resnet':
         model = SimpleResNet(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head,
+            num_blocks=4  # 기본 4 블록
+        ).to(device)
+    elif args.arch == 'convnext':
+        model = SimpleConvNeXt(
             input_channels=7,
             diopter_mode=args.diopter_mode,
             energy_head=args.energy_head,

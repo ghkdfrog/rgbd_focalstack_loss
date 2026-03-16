@@ -90,3 +90,24 @@
 - Multi-scene 학습이 아직 **충분한 에폭으로 돌리지 않음** (5ep only)
 - Deep 아키텍처도 50ep single-scene만 시도 → 더 긴 학습 필요
 - Langevin noise 적용 후 스케일 문제: `noise=True`로 실험(`0312_120655`)을 진행하였으나 약 20 epoch 후 **취소됨**. `step_size`(`eta`)에 비해 노이즈 크기(`sqrt(2*eta)`)가 과도하게 커서 노이즈가 지배적이 되어 의미 없는 Loss/PSNR이 도출되는 문제 발견. 보정 필요.
+
+---
+
+## 🚀 다음 단계 최적화 및 구조 변경 (Future Plans)
+
+현재 가장 높은 성능(27.86dB)을 달성한 `stride=1` 기반의 ResNet 구조에서, **파라미터 증가는 억제하면서 성능을 더 끌어올리기 위한 차세대 블록 적용**을 목표로 합니다. 
+
+### 후보 1. ConvNeXt 블록 (우선 적용 대상)
+* **논문**: *A ConvNet for the 2020s (CVPR 2022)*
+* **특징**: `7x7 Depthwise Conv` 와 `Pointwise Conv` 구조를 채택하여, 해상도를 유지하면서도 기존 ResNet 블록보다 **훨씬 넓은 Receptive Field(수용 영역) 확보**. 이는 광범위한 블러(CoC가 클 때 뭉개지는 영역)를 효과적으로 잡아냅니다.
+* **설정**: 기존 `ResidualBlock`(약 1.18M)과 동일한 파라미터 수를 맞추기 위해, 내부 Expansion 비율을 `expanion=9`로 조정 (약 1.19M).
+
+### 후보 2. Dilated Residual 블록 (팽창 합성곱)
+* **논문**: *Multi-Scale Context Aggregation by Dilated Convolutions (ICLR 2016)*
+* **특징**: 커널 사이에 빈 공간(padding)을 두어 연산량과 파라미터 증가 없이 Receptive Field만 극대화하는 방식. 
+* **구현 계획**: `dilation=2` 혹은 `dilation=4` 크기를 주어 블록을 구성하면, 고해상도를 잃지 않으면서 모델 연산 한 번에 넓은 착란원의 영향을 수식화할 수 있습니다.
+
+### 후보 3. SE-ResNet 블록 (채널 어텐션)
+* **논문**: *Squeeze-and-Excitation Networks (CVPR 2018)*
+* **특징**: 피처 맵(채널) 별로 가중치를 부여. 
+* **구현 계획**: CoC(혹은 Diopter) 맵의 조건부 특성에 따라 "블러(Blur) 생성을 유도하는 채널"과 "선명함(Sharp)을 유지하는 채널" 사이의 스위치를 모델이 스스로 조절하게끔 어텐션(Squeeze-and-Excitation) 모듈을 장착합니다.
