@@ -260,82 +260,52 @@ class SimpleResNet(nn.Module):
         return x
 
 
-class DilatedResidualBlock(nn.Module):
-    """
-    공간 해상도를 유지하면서 넓은 Receptive Field를 보기 위한 팽창 합성곱 블록
-    """
-    def __init__(self, channels, dilation=2):
-        super(DilatedResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, 
-                               padding=dilation, dilation=dilation)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
-
-    def forward(self, x):
-        residual = x
-        out = F.relu(self.conv1(x))
-        out = self.conv2(out)
-        out += residual
-        return F.relu(out)
-
-
-class SEResidualBlock(nn.Module):
-    """
-    특징 채널(Coc 조건 등)에 가중치를 주는 Squeeze-and-Excitation 블록
-    """
-    def __init__(self, channels, reduction=16):
-        super(SEResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
-        
-        self.se = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(channels, channels // reduction, 1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(channels // reduction, channels, 1),
-            nn.Sigmoid()
-        )
-
-    def forward(self, x):
-        residual = x
-        out = F.relu(self.conv1(x))
-        out = self.conv2(out)
-        
-        se_weight = self.se(out)
-        out = out * se_weight
-        
-        out += residual
-        return F.relu(out)
-
-
 class ConvNeXtBlock(nn.Module):
     """
-    표준 ConvNeXt Block (expansion=4)
-    메모리 폭발을 막기 위해 expansion을 9에서 4로 줄였습니다.
+    ConvNeXt Block (A ConvNet for the 2020s, CVPR 2022).
+    7x7 Depthwise Conv → LayerNorm → Pointwise Expand → GELU → Pointwise Project.
+    
+    expansion=9 일 때 channels=256 기준 약 1.19M 파라미터로,
+    ResidualBlock(256)의 약 1.18M과 거의 동일한 파라미터 수를 유지합니다.
     """
-    def __init__(self, channels, expansion=4):
+    def __init__(self, channels, expansion=9):
         super(ConvNeXtBlock, self).__init__()
-        self.dwconv = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
-        self.norm = nn.LayerNorm(channels, eps=1e-6)
+        hidden_dim = expansion * channels  # 256 * 9 = 2304
         
-        # expansion=4로 설정하여 VRAM 사용량을 대폭 낮춤
-        self.pwconv1 = nn.Linear(channels, expansion * channels)
+        # 7x7 Depthwise Conv: 넓은 Receptive Field 확보 (groups=channels)
+        self.dwconv = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
+        # LayerNorm (channel-last 방식)
+        self.norm = nn.LayerNorm(channels, eps=1e-6)
+        # Pointwise 확장 → GELU → Pointwise 축소 (Inverted Bottleneck)
+        self.pwconv1 = nn.Linear(channels, hidden_dim)
         self.act = nn.GELU()
-        self.pwconv2 = nn.Linear(expansion * channels, channels)
+        self.pwconv2 = nn.Linear(hidden_dim, channels)
 
     def forward(self, x):
         residual = x
+        # Depthwise Conv (NCHW)
         x = self.dwconv(x)
-        x = x.permute(0, 2, 3, 1) 
+        # Channel-last로 변환하여 LayerNorm + Pointwise 적용
+        x = x.permute(0, 2, 3, 1)   # (N, H, W, C)
         x = self.norm(x)
         x = self.pwconv1(x)
         x = self.act(x)
         x = self.pwconv2(x)
-        x = x.permute(0, 3, 1, 2)
+        x = x.permute(0, 3, 1, 2)   # (N, C, H, W)
         return residual + x
 
 
 class SimpleConvNeXt(nn.Module):
-    # 1. 괄호 안에 num_blocks=4 를 다시 추가해 줍니다!
+    """
+    SimpleResNet과 동일한 구조에서 ResidualBlock → ConvNeXtBlock 교체.
+    - Stem: 8ch → 64ch → 256ch (conv_in + conv_expand)
+    - Body: ConvNeXtBlock × num_blocks (stride=1, 해상도 유지)
+    - Head: fc (512×512 전용) 또는 conv1x1 (해상도 무관)
+    
+    expansion=9, num_blocks=4 기준:
+    - ConvNeXt blocks: 4 × ~1.19M ≈ 4.78M
+    - 총 파라미터: SimpleResNet(num_blocks=4)과 거의 동일 (~4.8M + head)
+    """
     def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4):
         super(SimpleConvNeXt, self).__init__()
         self.diopter_mode = diopter_mode
@@ -346,31 +316,16 @@ class SimpleConvNeXt(nn.Module):
         else:
             in_ch = input_channels
 
-        self.stem = nn.Conv2d(in_ch, 32, kernel_size=3, stride=1, padding=1)
-        
-        self.stage1 = nn.Sequential(
-            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.GELU(),
-            ConvNeXtBlock(channels=64, expansion=4)
-        )
-        
-        self.stage2 = nn.Sequential(
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
-            nn.GELU(),
-            ConvNeXtBlock(channels=128, expansion=4)
-        )
-        
-        # 2. Stage 3 수정: 전달받은 num_blocks 만큼 ConvNeXt 블록을 반복해서 쌓습니다.
-        stage3_layers = [
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1),
-            nn.GELU()
-        ]
-        for _ in range(num_blocks):
-            stage3_layers.append(ConvNeXtBlock(channels=256, expansion=4))
-            
-        self.stage3 = nn.Sequential(*stage3_layers)
+        # Stem: 입력 채널 → 64 → 256 (SimpleResNet과 동일)
+        self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1)
 
-        # 3. Energy output head (그대로 유지)
+        # ConvNeXt Blocks (stride=1 유지, 채널 256, expansion=9)
+        self.blocks = nn.Sequential(
+            *[ConvNeXtBlock(channels=256, expansion=9) for _ in range(num_blocks)]
+        )
+
+        # Energy output head
         if energy_head == 'conv1x1':
             self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
@@ -385,19 +340,15 @@ class SimpleConvNeXt(nn.Module):
         elif self.diopter_mode == 'coc':
             pass
 
-        x = F.relu(self.stem(x))
-        x = self.stage1(x)
-        x = self.stage2(x)
-        
-        # ✅ 2. 가장 메모리를 많이 먹는 Stage 3에 Gradient Checkpointing 적용!
-        # 기존: x = self.stage3(x) 
-        # 변경: 블록을 하나씩 꺼내서 checkpoint로 감싸서 실행합니다.
-        for module in self.stage3:
-            # 텐서가 gradient를 요구할 때만(학습 중일 때만) checkpoint 작동
+        x = F.relu(self.conv_in(x))
+        x = F.relu(self.conv_expand(x))
+
+        # Gradient Checkpointing: VRAM 절약을 위해 블록 단위로 체크포인트 적용
+        for block in self.blocks:
             if x.requires_grad:
-                x = checkpoint(module, x, use_reentrant=False)
+                x = checkpoint(block, x, use_reentrant=False)
             else:
-                x = module(x)
+                x = block(x)
 
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)
@@ -405,7 +356,6 @@ class SimpleConvNeXt(nn.Module):
         else:  # 'fc'
             x = torch.flatten(x, 1)
             x = self.fc(x)
-            
         return x
 
 
