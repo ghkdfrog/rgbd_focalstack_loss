@@ -265,12 +265,12 @@ class ConvNeXtBlock(nn.Module):
     ConvNeXt Block (A ConvNet for the 2020s, CVPR 2022).
     7x7 Depthwise Conv → LayerNorm → Pointwise Expand → GELU → Pointwise Project.
     
-    expansion=9 일 때 channels=256 기준 약 1.19M 파라미터로,
-    ResidualBlock(256)의 약 1.18M과 거의 동일한 파라미터 수를 유지합니다.
+    expansion=4 일 때 channels=256 기준 약 0.54M 파라미터.
+    (기존 expansion=9는 OOM을 유발하므로 정석인 4로 원복하고 블록 수를 늘립니다)
     """
-    def __init__(self, channels, expansion=9):
+    def __init__(self, channels, expansion=4):
         super(ConvNeXtBlock, self).__init__()
-        hidden_dim = expansion * channels  # 256 * 9 = 2304
+        hidden_dim = expansion * channels  # 256 * 4 = 1024
         
         # 7x7 Depthwise Conv: 넓은 Receptive Field 확보 (groups=channels)
         self.dwconv = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
@@ -302,11 +302,11 @@ class SimpleConvNeXt(nn.Module):
     - Body: ConvNeXtBlock × num_blocks (stride=1, 해상도 유지)
     - Head: fc (512×512 전용) 또는 conv1x1 (해상도 무관)
     
-    expansion=9, num_blocks=4 기준:
-    - ConvNeXt blocks: 4 × ~1.19M ≈ 4.78M
-    - 총 파라미터: SimpleResNet(num_blocks=4)과 거의 동일 (~4.8M + head)
+    expansion=4, num_blocks=9 기준:
+    - ConvNeXt blocks: 9 × ~0.54M ≈ 4.86M
+    - 총 파라미터: SimpleResNet(4블록, ~4.87M)과 거의 동일하게 일치!
     """
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=9):
         super(SimpleConvNeXt, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -320,9 +320,9 @@ class SimpleConvNeXt(nn.Module):
         self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
         self.conv_expand = nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1)
 
-        # ConvNeXt Blocks (stride=1 유지, 채널 256, expansion=9)
+        # ConvNeXt Blocks (stride=1 유지, 채널 256, expansion=4)
         self.blocks = nn.Sequential(
-            *[ConvNeXtBlock(channels=256, expansion=9) for _ in range(num_blocks)]
+            *[ConvNeXtBlock(channels=256, expansion=4) for _ in range(num_blocks)]
         )
 
         # Energy output head
