@@ -359,6 +359,79 @@ class SimpleConvNeXt(nn.Module):
         return x
 
 
+class ConvNeXtUNet(nn.Module):
+    """
+    ConvNeXt의 강력한 확장성(expansion=4)을 유지하면서 512x512 해상도에서 발생하는 OOM을 피하기 위한 모델.
+    - Stem(Downsample): 512x512 -> 256x256 으로 축소 (메모리 1/4 감소)
+    - Body: 256x256 해상도에서 ConvNeXtBlock 수행 (expansion=4 사용 가능)
+    - Upsample: 256x256 -> 512x512 복원 (pixel-perfect output 유지)
+    """
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=9):
+        super(ConvNeXtUNet, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+
+        if diopter_mode == 'spatial' or diopter_mode == 'coc':
+            in_ch = input_channels + 1
+        else:
+            in_ch = input_channels
+
+        # 1. Stem & Downsample (512x512 -> 256x256)
+        self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
+        self.downsample = nn.Conv2d(64, 256, kernel_size=4, stride=2, padding=1) # 공간 1/2 축소, 채널 확장
+
+        # 2. Body: ConvNeXt Blocks (256x256 at 256ch)
+        self.blocks = nn.Sequential(
+            *[ConvNeXtBlock(channels=256, expansion=4) for _ in range(num_blocks)]
+        )
+
+        # 3. Upsample (256x256 -> 512x512)
+        # kernel=4, stride=2, padding=1 은 정확히 크기를 2배로 만듭니다.
+        self.upsample = nn.ConvTranspose2d(256, 256, kernel_size=4, stride=2, padding=1)
+        self.conv_out = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+
+        # 4. Energy output head (512x512 기준)
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            self.fc = nn.Linear(256 * 512 * 512, 1)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        if self.diopter_mode == 'spatial':
+            diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x = torch.cat([x, diopter_map], dim=1)
+        elif self.diopter_mode == 'coc':
+            pass
+
+        # Downsample
+        x_stem = F.relu(self.conv_in(x))
+        x_down = F.relu(self.downsample(x_stem))
+
+        # Body
+        x_body = x_down
+        for block in self.blocks:
+            if x_body.requires_grad:
+                x_body = checkpoint(block, x_body, use_reentrant=False)
+            else:
+                x_body = block(x_body)
+
+        # Upsample (+ Res connection optional, skipped here for simplicity)
+        x_up = F.relu(self.upsample(x_body))
+        x_out = F.relu(self.conv_out(x_up))
+
+        # Head
+        if self.energy_head == 'conv1x1':
+            eng = self.conv_energy(x_out)
+            eng = torch.sum(eng, dim=(2, 3))
+        else:  # 'fc'
+            eng = torch.flatten(x_out, 1)
+            eng = self.fc(eng)
+            
+        return eng
+
+
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""
     lines = []

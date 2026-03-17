@@ -20,8 +20,8 @@ def get_parser():
 
     # Model
     parser.add_argument('--arch', type=str, default='simple',
-                        choices=['simple', 'deep', 'stride', 'resnet', 'convnext'],
-                        help='Model architecture: simple (5-layer), deep (10-layer), stride (downsampling), resnet (ResNet blocks, stride 1), or convnext (ConvNeXt blocks)')
+                        choices=['simple', 'deep', 'stride', 'resnet', 'convnext', 'convnext_unet'],
+                        help='Model architecture: simple (5-layer), deep (10-layer), stride (downsampling), resnet (ResNet blocks, stride 1), convnext (ConvNeXt blocks), or convnext_unet (U-Net with ConvNeXt)')
     parser.add_argument('--diopter_mode', type=str, default='coc',
                         choices=['spatial', 'coc'],
                         help='Diopter conditioning mode')

@@ -25,7 +25,7 @@ from tqdm import tqdm
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, save_model_architecture
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, ConvNeXtUNet, save_model_architecture
 from gm.config import parse_args
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
@@ -335,6 +335,13 @@ def main():
             diopter_mode=args.diopter_mode,
             energy_head=args.energy_head,
             num_blocks=4  # 기본 4 블록
+        ).to(device)
+    elif args.arch == 'convnext_unet':
+        model = ConvNeXtUNet(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head,
+            num_blocks=9
         ).to(device)
     else:
         model = SimpleCNN(
