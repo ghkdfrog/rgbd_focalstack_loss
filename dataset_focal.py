@@ -52,11 +52,11 @@ class FocalDataset(Dataset):
 
     def __init__(self, data_dir, generated_data_dir,
                  split='train', unmatch_ratio=3, seed=42,
-                 use_coc=False, return_gt=False, single_scene_only=False, num_scenes=0):
+                 diopter_mode='spatial', return_gt=False, single_scene_only=False, num_scenes=0):
         self.data_dir = data_dir
         self.generated_data_dir = generated_data_dir
         self.unmatch_ratio = unmatch_ratio
-        self.use_coc = use_coc
+        self.diopter_mode = diopter_mode
         self.return_gt = return_gt
         self.single_scene_only = single_scene_only
         self.rng = np.random.default_rng(seed)
@@ -254,7 +254,7 @@ class FocalDataset(Dataset):
         depth_t = torch.from_numpy(depth).unsqueeze(0).float()       # (1, H, W)
         pred_t  = torch.from_numpy(pred).permute(2, 0, 1).float()    # (3, H, W)
 
-        if self.use_coc:
+        if self.diopter_mode == 'coc' or self.diopter_mode == 'coc_abs':
             # Compute CoC map on CPU (numpy) — avoid GPU overhead in forward pass
             # depth is already normalized (d/12.0 → [0,1]), recover meters
             depth_m = depth * 12.0 + 1e-6          # (H, W)

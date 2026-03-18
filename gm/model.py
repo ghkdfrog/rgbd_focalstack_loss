@@ -432,6 +432,92 @@ class ConvNeXtUNet(nn.Module):
         return eng
 
 
+class DilatedNet(nn.Module):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc'):
+        super(DilatedNet, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+
+        if diopter_mode == 'spatial' or diopter_mode == 'coc':
+            in_ch = input_channels + 1
+        elif diopter_mode == 'coc_abs':
+            in_ch = input_channels + 2
+        else:
+            in_ch = input_channels
+
+        # Stem: 입력 채널 → 64 → 256 (SimpleResNet과 동일)
+        self.stem = nn.Sequential(
+            nn.Conv2d(in_ch, 32, kernel_size=3, stride=1, padding=1),
+            nn.GroupNorm(8, 32),
+            nn.SiLU(),
+
+            nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+            nn.GroupNorm(8, 64),
+            nn.SiLU(),
+        )
+
+        # Dense Blocs
+        self.block1 = self._block(64, dilation=1)
+        self.block2 = self._block(64, dilation=1)
+
+        # Dilated blocks
+        self.block3 = self._block(64, dilation=2)
+        self.block4 = self._block(64, dilation=4)
+        self.block5 = self._block(64, dilation=8)
+
+        # CoC modulation
+        self.gamma = nn.Conv2d(1, 64, 1)
+        self.beta = nn.Conv2d(1, 64, 1)
+
+        # Energy head
+        self.head = nn.Conv2d(64, 1, 1)
+
+    def _block(self, ch, dilation=1):
+        return nn.Sequential(
+            nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=dilation, dilation=dilation),
+            nn.GroupNorm(8, ch),
+            nn.SiLU(),
+            nn.Conv2d(ch, ch, kernel_size=3, stride=1, padding=dilation, dilation=dilation),
+            nn.GroupNorm(8, ch),
+            nn.SiLU(),
+        )
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+
+        if self.diopter_mode == 'spatial':
+            x = torch.cat([x, diopter_map], dim=1)
+        elif self.diopter_mode == 'coc':
+            pass
+        elif self.diopter_mode == 'coc_abs':
+            diopter_abs = torch.abs(diopter_map)
+            x = torch.cat([x, diopter_abs], dim=1)
+
+        f = self.stem(x)
+
+        # dense
+        f = f + self.block1(f)
+        f = f + self.block2(f)
+
+        # dilated + CoC conditioning
+        for block in [self.block3, self.block4, self.block5]:
+            res = f
+            f = block(f)
+
+            gamma = self.gamma(diopter_map)
+            beta = self.beta(diopter_map)
+            f = gamma * f + beta
+
+            f = f + res
+
+        # head
+        f = self.head(f)
+        f = f.sum()
+        return f
+
+
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""
     lines = []

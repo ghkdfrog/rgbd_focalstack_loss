@@ -25,7 +25,7 @@ from tqdm import tqdm
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, ConvNeXtUNet, save_model_architecture
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, save_model_architecture
 from gm.config import parse_args
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
@@ -285,19 +285,19 @@ def main():
     if generated_data_dir is None:
         generated_data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 
-    use_coc = (args.diopter_mode == 'coc')
+    diopter_mode = args.diopter_mode
 
     train_ds = FocalDataset(
         args.data_dir, generated_data_dir,
         split='train', unmatch_ratio=args.unmatch_ratio,
-        use_coc=use_coc, return_gt=True,
+        diopter_mode=diopter_mode, return_gt=True,
         single_scene_only=args.single_scene_only,
         num_scenes=args.num_scenes
     )
     val_ds = FocalDataset(
         args.data_dir, generated_data_dir,
         split='val', unmatch_ratio=0,
-        use_coc=use_coc, return_gt=True,
+        diopter_mode=diopter_mode, return_gt=True,
         single_scene_only=args.single_scene_only,
         num_scenes=args.num_scenes
     )
@@ -342,6 +342,12 @@ def main():
             diopter_mode=args.diopter_mode,
             energy_head=args.energy_head,
             num_blocks=9
+        ).to(device)
+    elif args.arch == 'dilated':
+        model = DilatedNet(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head
         ).to(device)
     else:
         model = SimpleCNN(
