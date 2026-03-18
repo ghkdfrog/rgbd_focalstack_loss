@@ -525,6 +525,94 @@ class DilatedNet(nn.Module):
         return f
 
 
+class SpatialFiLM(nn.Module):
+    def __init__(self, condition_channels=1, feature_channels=256):
+        super(SpatialFiLM, self).__init__()
+        self.conv_gamma = nn.Conv2d(condition_channels, feature_channels, kernel_size=3, padding=1)
+        self.conv_beta = nn.Conv2d(condition_channels, feature_channels, kernel_size=3, padding=1)
+
+    def forward(self, x, condition_map):
+        gamma = self.conv_gamma(condition_map)
+        beta = self.conv_beta(condition_map)
+        return x * (1 + gamma) + beta
+
+class FiLMResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super(FiLMResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.film = SpatialFiLM(condition_channels=1, feature_channels=channels)
+
+    def forward(self, x, condition_map):
+        residual = x
+        out = F.relu(self.conv1(x))
+        out = self.conv2(out)
+        out = self.film(out, condition_map) # FiLM 적용
+        out += residual
+        return F.relu(out)
+
+class FiLMResNet(nn.Module):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4, channels=256):
+        super(FiLMResNet, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+
+        if diopter_mode in ['spatial', 'coc', 'coc_signed']:
+            in_ch = input_channels + 1  # 7 + 1 = 8채널
+        else:
+            in_ch = input_channels
+
+        self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, channels, kernel_size=3, stride=1, padding=1)
+        
+        self.res_blocks = nn.ModuleList([
+            FiLMResidualBlock(channels) for _ in range(num_blocks)
+        ])
+
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
+        else:
+            self.fc = nn.Linear(channels * 512 * 512, 1)
+
+    def forward(self, x, condition):
+        """
+        - x: 이미 RGBD + RGB가 결합된 7채널 입력 (N, 7, H, W)
+        - condition: spatial(스칼라) 또는 coc_signed(맵) (N, 1, H, W)
+        """
+        N, C, H, W = x.shape
+
+        # 1. Condition Map 전처리 및 Input Concat
+        if self.diopter_mode == 'spatial':
+            cond_map = condition.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x = torch.cat([x, cond_map], dim=1) # 8채널로 확장
+        elif self.diopter_mode in ['coc', 'coc_signed']:
+            cond_map = condition
+            if cond_map.dim() == 3:
+                cond_map = cond_map.unsqueeze(1)
+            x = torch.cat([x, cond_map], dim=1) # 8채널로 확장
+        else:
+            cond_map = None
+
+        # 2. 초기 특징 추출
+        x = F.relu(self.conv_in(x))
+        x = F.relu(self.conv_expand(x))
+        
+        # 3. FiLM Residual Blocks 반복 통과
+        for block in self.res_blocks:
+            if cond_map is not None:
+                x = block(x, cond_map)
+
+        # 4. Energy Head 출력
+        if self.energy_head == 'conv1x1':
+            x = self.conv_energy(x)
+            x = torch.sum(x, dim=(2, 3))
+        else:
+            x = torch.flatten(x, 1)
+            x = self.fc(x)
+            
+        return x
+
+
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""
     lines = []

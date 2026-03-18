@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, FiLMResNet
 from gm.config import parse_args
 from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr

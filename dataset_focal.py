@@ -254,7 +254,7 @@ class FocalDataset(Dataset):
         depth_t = torch.from_numpy(depth).unsqueeze(0).float()       # (1, H, W)
         pred_t  = torch.from_numpy(pred).permute(2, 0, 1).float()    # (3, H, W)
 
-        if self.diopter_mode == 'coc' or self.diopter_mode == 'coc_abs':
+        if self.diopter_mode == 'coc' or self.diopter_mode == 'coc_abs' or self.diopter_mode == 'coc_signed':
             # Compute CoC map on CPU (numpy) — avoid GPU overhead in forward pass
             # depth is already normalized (d/12.0 → [0,1]), recover meters
             depth_m = depth * 12.0 + 1e-6          # (H, W)
@@ -265,7 +265,7 @@ class FocalDataset(Dataset):
             D = 0.004
             cocScale = 30.0
             dp_fl = 1.0 / film_len_dist + dp_focal_val
-            coc_np = D * np.abs(
+            coc_np = D * (
                 (dp_fl - dp_dm) / (dp_fl - dp_focal_val + 1e-8) - 1.0
             )
             film_width = 2.0 * film_len_dist * np.tan(fov / 2.0)
@@ -273,6 +273,8 @@ class FocalDataset(Dataset):
             coc_np = np.clip(coc_np / film_width * W / cocScale, 0.0, 1.0).astype(np.float32)
             coc_t = torch.from_numpy(coc_np).unsqueeze(0).float()   # (1, H, W)
             x = torch.cat([rgb_t, depth_t, pred_t, coc_t], dim=0)  # (8, H, W)
+            if self.diopter_mode == 'coc' or self.diopter_mode == 'coc_abs':
+                x = torch.cat([rgb_t, depth_t, pred_t, torch.abs(coc_t)], dim=0)  # (8, H, W)
         else:
             x = torch.cat([rgb_t, depth_t, pred_t], dim=0)          # (7, H, W)
 
