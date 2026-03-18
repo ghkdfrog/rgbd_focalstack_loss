@@ -575,25 +575,24 @@ class FiLMResNet(nn.Module):
             self.fc = nn.Linear(channels * 512 * 512, 1)
 
     def forward(self, x, condition):
-        """
-        - x: 이미 RGBD + RGB가 결합된 7채널 입력 (N, 7, H, W)
-        - condition: spatial(스칼라) 또는 coc_signed(맵) (N, 1, H, W)
-        """
         N, C, H, W = x.shape
 
         # 1. Condition Map 전처리 및 Input Concat
         if self.diopter_mode == 'spatial':
+            # spatial 모드는 train.py에서 x가 7채널로 들어오므로 여기서 합쳐줍니다.
             cond_map = condition.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, cond_map], dim=1) # 8채널로 확장
+            
         elif self.diopter_mode in ['coc', 'coc_signed']:
-            cond_map = condition
-            if cond_map.dim() == 3:
-                cond_map = cond_map.unsqueeze(1)
-            x = torch.cat([x, cond_map], dim=1) # 8채널로 확장
+            # 핵심 수정: train.py에서 이미 x의 8번째 채널에 CoC 맵을 붙여서 보냅니다! (C=8)
+            # x에 다시 cat을 하면 9채널이 되므로 x는 그대로 둡니다.
+            # 대신 FiLM 블록에 넣어줄 cond_map을 x의 마지막 채널에서 추출합니다.
+            cond_map = x[:, 7:8, :, :] 
+            
         else:
             cond_map = None
 
-        # 2. 초기 특징 추출
+        # 2. 초기 특징 추출 (x는 정상적인 8채널 상태)
         x = F.relu(self.conv_in(x))
         x = F.relu(self.conv_expand(x))
         
