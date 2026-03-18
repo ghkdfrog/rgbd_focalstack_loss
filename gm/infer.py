@@ -379,7 +379,6 @@ def main():
         saved_args = {}
 
     diopter_mode = saved_args.get('diopter_mode', 'coc')
-    use_coc = (diopter_mode == 'coc')
 
     # args.json에서 학습 시 설정 복원 → CLI로 명시하면 override
     train_steps = saved_args.get('gm_steps', 50)
@@ -426,7 +425,7 @@ def main():
     ds = FocalDataset(
         args.data_dir, generated_data_dir,
         split=infer_split, unmatch_ratio=0,
-        use_coc=use_coc, return_gt=True,
+        diopter_mode=diopter_mode, return_gt=True,
         single_scene_only=single_scene_only
     )
 
