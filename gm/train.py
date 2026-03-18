@@ -327,7 +327,8 @@ def main():
             input_channels=7,
             diopter_mode=args.diopter_mode,
             energy_head=args.energy_head,
-            num_blocks=4  # 기본 4 블록
+            num_blocks=4,  # 기본 4 블록
+            channels=args.channels
         ).to(device)
     elif args.arch == 'convnext':
         model = SimpleConvNeXt(

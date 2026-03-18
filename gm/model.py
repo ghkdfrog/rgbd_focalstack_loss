@@ -208,7 +208,7 @@ class SimpleResNet(nn.Module):
     - 입력 채널을 128 (또는 256)까지 확장한 후 Residual Block 반복
     - fc 에너지 헤드 유지 가능
     """
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4, channels=256):
         super(SimpleResNet, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -223,19 +223,19 @@ class SimpleResNet(nn.Module):
 
         # 초기 특징 추출 (해상도 유지)
         self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
-        self.conv_expand = nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, channels, kernel_size=3, stride=1, padding=1)
         
         # Residual Blocks 쌓기 (stride=1 유지, 채널 256)
         self.res_blocks = nn.Sequential(
-            *[ResidualBlock(256) for _ in range(num_blocks)]
+            *[ResidualBlock(channels) for _ in range(num_blocks)]
         )
 
         # Energy output head
         if energy_head == 'conv1x1':
-            self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
+            self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
             # 512x512 해상도 유지 시 파라미터 맞추기 위해 256 채널로 FC 레이어 구성 (기존 SimpleCNN과 동일: 약 67M)
-            self.fc = nn.Linear(256 * 512 * 512, 1)
+            self.fc = nn.Linear(channels * 512 * 512, 1)
 
     def forward(self, x, diopter):
         N, C, H, W = x.shape
@@ -469,8 +469,11 @@ class DilatedNet(nn.Module):
         self.gamma = nn.Conv2d(1, 64, 1)
         self.beta = nn.Conv2d(1, 64, 1)
 
-        # Energy head
-        self.head = nn.Conv2d(64, 1, 1)
+        # Energy output head
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(64, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            self.fc = nn.Linear(64 * 512 * 512, 1)
 
     def _block(self, ch, dilation=1):
         return nn.Sequential(
@@ -513,8 +516,12 @@ class DilatedNet(nn.Module):
             f = f + res
 
         # head
-        f = self.head(f)
-        f = f.sum()
+        if self.energy_head == 'conv1x1':
+            f = self.conv_energy(f)
+            f = f.sum()
+        else:  # 'fc'
+            f = torch.flatten(f, 1)
+            f = self.fc(f)
         return f
 
 

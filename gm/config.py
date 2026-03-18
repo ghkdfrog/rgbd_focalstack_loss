@@ -28,6 +28,8 @@ def get_parser():
     parser.add_argument('--energy_head', type=str, default='fc',
                         choices=['fc', 'conv1x1'],
                         help='Energy output head: fc (Linear 67M, 512x512 only) or conv1x1 (Conv2d 1x1 + sum, resolution-free)')
+    parser.add_argument('--channels', type=int, default=256,
+                        help='Number of channels in the model')
 
     # Training
     parser.add_argument('--epochs', type=int, default=50)
