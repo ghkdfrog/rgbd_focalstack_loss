@@ -436,7 +436,6 @@ def main():
         split=infer_split, unmatch_ratio=0,
         diopter_mode=diopter_mode, return_gt=True,
         single_scene_only=single_scene_only,
-        channels=channels
     )
 
     # 생성할 plane 목록 결정
