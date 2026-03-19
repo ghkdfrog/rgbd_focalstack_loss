@@ -46,13 +46,15 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     elif arch == 'stride':
         model = SimpleCNNStride(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'resnet':
-        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4).to(device)
+        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=ckpt['channels']).to(device)
     elif arch == 'convnext':
         model = SimpleConvNeXt(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4).to(device)
     elif arch == 'convnext_unet':
         model = ConvNeXtUNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=9).to(device)
     elif arch == 'dilated':
         model = DilatedNet(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
+    elif arch == 'film_resnet':
+        model = FiLMResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=ckpt['channels']).to(device)
     else:
         model = SimpleCNN(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
 
