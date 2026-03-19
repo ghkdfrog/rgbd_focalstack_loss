@@ -41,10 +41,8 @@ class SimpleCNN(nn.Module):
         self.energy_head = energy_head
 
         # diopter_mode에 따라 입력 채널 수 결정
-        if diopter_mode == 'spatial':
-            in_ch = input_channels + 1  # RGBD(4) + Optim(3) + diopter(1) = 8
-        elif diopter_mode == 'coc':
-            in_ch = input_channels + 1  # RGBD(4) + Optim(3) + CoC(1) = 8
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
+            in_ch = input_channels + 1
         else:
             in_ch = input_channels
 
@@ -67,7 +65,7 @@ class SimpleCNN(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode == 'coc':
+        elif self.diopter_mode in ['coc', 'coc_abs', 'coc_signed']:
             pass  # CoC는 이미 x에 포함되어 있음
 
         x = F.relu(self.conv1(x))
@@ -92,9 +90,7 @@ class SimpleCNNDeep(nn.Module):
         self.energy_head = energy_head
 
         # diopter_mode에 따라 입력 채널 수 결정
-        if diopter_mode == 'spatial':
-            in_ch = input_channels + 1
-        elif diopter_mode == 'coc':
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
@@ -124,7 +120,7 @@ class SimpleCNNDeep(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode == 'coc':
+        elif self.diopter_mode in ['coc', 'coc_abs', 'coc_signed']:
             pass
 
         x = F.relu(self.conv1(x))
@@ -155,9 +151,7 @@ class SimpleCNNStride(nn.Module):
         self.energy_head = energy_head
 
         # diopter_mode에 따라 입력 채널 수 결정
-        if diopter_mode == 'spatial':
-            in_ch = input_channels + 1
-        elif diopter_mode == 'coc':
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
@@ -184,7 +178,7 @@ class SimpleCNNStride(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode == 'coc':
+        elif self.diopter_mode in ['coc', 'coc_abs', 'coc_signed']:
             pass
 
         x = F.relu(self.conv1(x))
@@ -214,7 +208,7 @@ class SimpleResNet(nn.Module):
         self.energy_head = energy_head
         self.use_film = use_film
 
-        if diopter_mode in ['spatial', 'coc', 'coc_signed']:
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
@@ -241,7 +235,7 @@ class SimpleResNet(nn.Module):
 
     def _get_cond_map(self, x, diopter, N, H, W):
         """FiLM conditioning용 condition map 추출"""
-        if self.diopter_mode in ['coc', 'coc_signed']:
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             return x[:, 7:8, :, :]
         else:  # spatial
             return diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
@@ -252,7 +246,7 @@ class SimpleResNet(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode in ['coc', 'coc_signed']:
+        elif self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             pass  # CoC는 이미 x에 포함
 
         # FiLM: condition map 추출
@@ -351,7 +345,7 @@ class SimpleConvNeXt(nn.Module):
         self.energy_head = energy_head
         self.use_film = use_film
 
-        if diopter_mode in ['spatial', 'coc', 'coc_signed']:
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
@@ -374,7 +368,7 @@ class SimpleConvNeXt(nn.Module):
             self.fc = nn.Linear(channels * 512 * 512, 1)
 
     def _get_cond_map(self, x, diopter, N, H, W):
-        if self.diopter_mode in ['coc', 'coc_signed']:
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             return x[:, 7:8, :, :]
         else:
             return diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
@@ -385,7 +379,7 @@ class SimpleConvNeXt(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode in ['coc', 'coc_signed']:
+        elif self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             pass
 
         cond_map = self._get_cond_map(x, diopter, N, H, W) if self.use_film else None
@@ -420,7 +414,7 @@ class ConvNeXtUNet(nn.Module):
         self.energy_head = energy_head
         self.use_film = use_film
 
-        if diopter_mode in ['spatial', 'coc', 'coc_signed']:
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
@@ -450,7 +444,7 @@ class ConvNeXtUNet(nn.Module):
             self.fc = nn.Linear(channels * 512 * 512, 1)
 
     def _get_cond_map(self, x, diopter, N, H, W):
-        if self.diopter_mode in ['coc', 'coc_signed']:
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             return x[:, 7:8, :, :]
         else:
             return diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
@@ -461,7 +455,7 @@ class ConvNeXtUNet(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode in ['coc', 'coc_signed']:
+        elif self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             pass
 
         # FiLM: condition map (원본 해상도)
@@ -502,10 +496,8 @@ class DilatedNet(nn.Module):
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
 
-        if diopter_mode == 'spatial' or diopter_mode == 'coc':
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
             in_ch = input_channels + 1
-        elif diopter_mode == 'coc_abs':
-            in_ch = input_channels + 2
         else:
             in_ch = input_channels
 
@@ -556,11 +548,8 @@ class DilatedNet(nn.Module):
 
         if self.diopter_mode == 'spatial':
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode == 'coc':
+        elif self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             pass
-        elif self.diopter_mode == 'coc_abs':
-            diopter_abs = torch.abs(diopter_map)
-            x = torch.cat([x, diopter_abs], dim=1)
 
         f = self.stem(x)
 

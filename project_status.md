@@ -32,12 +32,12 @@
 
 ---
 
-## 실험 결과 요약 (23개 run)
+## 실험 결과 요약 (30개 run)
 
 ### 🏆 Single-Scene Prototype Runs (scene 0 오버피팅)
 
 > [!IMPORTANT]
-> **Best PSNR: ~27.86 dB** — **ResNet**, `linear` eta 스케줄, 50 GM steps (32 epochs 진행 중)
+> **Best PSNR: ~29.71 dB** — **FiLMResNet** 128ch, `coc_signed`, `linear` eta 스케줄, 50 GM steps (100 epochs)
 
 | Run | 설정 | Best Epoch | Best PSNR (avg p0/p20/p39) | 비고 |
 |:---|:---|:---:|---:|:---|
@@ -54,6 +54,17 @@
 | `0307_232125` | **spatial**, fc, constant, 100ep, 50steps | **latest** | **18.59 dB** (18.7/19.4/17.6) | spatial 모드는 성능 불리 |
 | `0309_174409` | coc, **conv1x1**, constant, 100ep | **best** | **16.39 dB** → latest **붕괴** | conv1x1은 불안정(latest -2dB) |
 
+### 🧪 New Architecture Single-Scene Runs
+
+| Run | 설정 | Best Epoch | Best PSNR (avg p0/p20/p39) | 비고 |
+|:---|:---|:---:|---:|:---|
+| `0318_130552` | **coc_signed**, **film_resnet** 128ch, fc, **linear**, 100ep | **best_psnr** | **29.71 dB** (27.3/30.5/31.3) | 🥇 **전체 최고 성능**. FiLM+coc_signed 조합이 p39에서 31.3dB 달성 |
+| `0318_112238` | coc, **resnet** 128ch, fc, **linear**, 50ep | **best_psnr(19ep)** | **27.59 dB** (26.1/29.6/27.1) | ResNet 128ch. 256ch(0314_160511, 27.86)과 유사한 성능 |
+| `0317_034204` | coc, **convnext_unet**, **conv1x1**, **linear**, 100ep | **best** | **25.82 dB** (25.4/26.5/25.5) | ConvNeXtUNet+conv1x1. plane별 편차 작음 |
+| `0317_033217` | coc, **convnext_unet**, fc, **linear**, 100ep | **best** | **25.12 dB** (24.7/25.9/24.8) | ConvNeXtUNet+fc. conv1x1보다 약간 낮음 |
+| `0318_202001` | coc, **resnet** 128ch, **conv1x1**, **linear**, 50ep | **best_psnr(8ep)** | **24.96 dB** (24.8/25.4/24.7) | ResNet 128ch+conv1x1. fc(27.59)보다 낮지만 안정적 |
+| `0318_132413` | **coc_abs**, **dilated**, **conv1x1**, **linear**, 50ep | **best_psnr(50ep)** | **22.40 dB** (21.3/23.7/22.2) | DilatedNet+coc_abs. 새 diopter 모드 실험 |
+
 ### 🌐 Multi-Scene Runs (전체 데이터셋)
 
 | Run | 설정 | Best Epoch | PSNR (avg p0/p20/p39) | 비고 |
@@ -62,52 +73,46 @@
 | `0310_075915` | coc, fc, cosine, 100ep, 5장 | **latest** | **19.88 dB** (19.2/20.7/19.7) | fc가 multi에서는 conv1x1보다 낮음 |
 | `0311_142349` | coc, fc, constant, **5ep**, 전체 | **best_psnr** | **21.46 dB** (20.7/21.8/21.9) | 전체(90) scene 학습 (5 epoch). Best PSNR 기준 |
 | `0312_134650` | coc, fc, **linear**, 100ep, 5장 | **14 ep** | **20.97 dB** (21.0/21.1/20.8) | 100ep 완료. 초반 피크(14ep) 후 성능 하락. Multi-scene에서 linear 감쇠가 불안정할 수 있음 |
-
-
+| `0316_083358` | coc, **resnet**, fc, **linear**, 5ep, 전체 | — | — | 전체 scene ResNet 학습 시도. 5ep만 진행, 추론 결과 없음 (중단/미완료) |
 
 ---
 
-## 핵심 인사이트 (CSV_ANALYSIS.md 포함)
+## 핵심 인사이트
 
 ### 1. η 스케줄의 효과
-- `linear`/`cosine` 감쇠가 `constant`보다 **single-scene에서 2~3 dB 유리** (25.4 vs 22.7 dB)
-- 단, 추론 스텝을 학습 스텝보다 과도하게 늘리면(200steps) **cosine/linear에서 1~1.5 dB 하락**
+- `linear`/`cosine` 감쇠가 `constant`보다 **single-scene에서 2~3 dB 유리**
 
-### 2. 최적 추론 스텝 수
-- 학습 스텝의 **절반~동일(30~80스텝)** 부근에서 Peak PSNR 달성
-- 200스텝으로 과도하게 늘리면 PSNR이 유지되거나 오히려 하락 (over-Langevin 현상)
+### 2. 아키텍처 비교
+- **FiLMResNet(coc_signed) 128ch**: **전체 최고 성능 29.71 dB**. FiLM conditioning + 부호 있는 CoC의 시너지
+- **ResNet 256ch**: 27.86 dB. 128ch(27.59)와 유사 → 채널 수보다 구조/conditioning이 중요
+- **ConvNeXtUNet**: conv1x1(25.82) > fc(25.12). plane별 편차가 매우 작아 안정적
+- **DilatedNet + coc_abs**: 22.40 dB. 절대값 CoC로는 방향 정보 부족
 
-### 3. 아키텍처 비교
-- **ResNet**: **최고 성능 (27.86 dB) 달성**. 기존 SimpleCNN 대비 압도적인 성능 향상(+2.5dB).
-- **SimpleCNNDeep (10L)**: single-scene에서 22.95 dB로 SimpleCNN(5L) 대비 낮음. 50ep 부족할 수 있음
-- **conv1x1 head**: single-scene에서 불안정하지만, multi-scene에서는 fc보다 오히려 안정적
+### 3. Diopter 조건부 모드
+- **coc_signed > coc > coc_abs > spatial** 순서로 성능 우위
+- coc_signed는 "초점 앞/뒤" 방향 정보를 명시적으로 제공
 
-### 4. Diopter 조건부 모드
-- **CoC 모드가 Spatial 모드보다 압도적 우위** (25 dB vs 18.6 dB)
-- Spatial 모드는 plane별 PSNR 편차도 큼 (p0=16, p39=10)
+### 4. FiLM Conditioning
+- FiLMResNet(coc_signed) 128ch: **29.71 dB** — ResNet 256ch(27.86) 대비 +1.85 dB
+- 적은 파라미터(128ch)로도 FiLM + coc_signed 조합이 효과적
 
 ### 5. 현재 미해결 과제
 - Multi-scene 학습이 아직 **충분한 에폭으로 돌리지 않음** (5ep only)
-- Deep 아키텍처도 50ep single-scene만 시도 → 더 긴 학습 필요
-- Langevin noise 적용 후 스케일 문제: `noise=True`로 실험(`0312_120655`)을 진행하였으나 약 20 epoch 후 **취소됨**. `step_size`(`eta`)에 비해 노이즈 크기(`sqrt(2*eta)`)가 과도하게 커서 노이즈가 지배적이 되어 의미 없는 Loss/PSNR이 도출되는 문제 발견. 보정 필요.
+- ConvNeXtUNet + FiLM 조합은 아직 미실험
+- Langevin noise 스케일 문제 미해결
 
 ---
 
-## 🚀 다음 단계 최적화 및 구조 변경 (Future Plans)
-
-현재 가장 높은 성능(27.86dB)을 달성한 `stride=1` 기반의 ResNet 구조에서, **파라미터 증가는 억제하면서 성능을 더 끌어올리기 위한 차세대 블록 적용**을 목표로 합니다. 
+## 🚀 다음 단계 (Future Plans)
 
 ### 후보 1. ConvNeXt 블록 (우선 적용 대상)
 * **논문**: *A ConvNet for the 2020s (CVPR 2022)*
-* **특징**: `7x7 Depthwise Conv` 와 `Pointwise Conv` 구조를 채택하여, 해상도를 유지하면서도 기존 ResNet 블록보다 **훨씬 넓은 Receptive Field(수용 영역) 확보**. 이는 광범위한 블러(CoC가 클 때 뭉개지는 영역)를 효과적으로 잡아냅니다.
-* **설정**: 기존 `ResidualBlock`(약 1.18M)과 동일한 파라미터 수를 맞추기 위해, 내부 Expansion 비율을 `expanion=9`로 조정 (약 1.19M).
+* **특징**: `7x7 Depthwise Conv` 와 `Pointwise Conv` 구조를 채택하여, 해상도를 유지하면서도 기존 ResNet 블록보다 **훨씬 넓은 Receptive Field(수용 영역) 확보**.
 
 ### 후보 2. Dilated Residual 블록 (팽창 합성곱)
 * **논문**: *Multi-Scale Context Aggregation by Dilated Convolutions (ICLR 2016)*
-* **특징**: 커널 사이에 빈 공간(padding)을 두어 연산량과 파라미터 증가 없이 Receptive Field만 극대화하는 방식. 
-* **구현 계획**: `dilation=2` 혹은 `dilation=4` 크기를 주어 블록을 구성하면, 고해상도를 잃지 않으면서 모델 연산 한 번에 넓은 착란원의 영향을 수식화할 수 있습니다.
+* **특징**: 커널 사이에 빈 공간을 두어 연산량과 파라미터 증가 없이 Receptive Field만 극대화.
 
 ### 후보 3. SE-ResNet 블록 (채널 어텐션)
 * **논문**: *Squeeze-and-Excitation Networks (CVPR 2018)*
-* **특징**: 피처 맵(채널) 별로 가중치를 부여. 
-* **구현 계획**: CoC(혹은 Diopter) 맵의 조건부 특성에 따라 "블러(Blur) 생성을 유도하는 채널"과 "선명함(Sharp)을 유지하는 채널" 사이의 스위치를 모델이 스스로 조절하게끔 어텐션(Squeeze-and-Excitation) 모듈을 장착합니다.
+* **특징**: 피처 맵(채널) 별로 가중치를 부여하여 CoC 조건에 따라 블러/선명 채널 조절.
