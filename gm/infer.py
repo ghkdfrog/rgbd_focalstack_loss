@@ -421,6 +421,7 @@ def main():
     print(f"  eta_schedule : {eta_schedule}  (train was {train_eta_schedule})")
     print(f"  eta_min      : {eta_min}  (train was {train_eta_min})")
     print(f"  langevin_noise: {langevin_noise}  (train was {train_langevin_noise})")
+    print(f"  channels     : {channels}  (train was {train_channels})")
     print(f"  prototype    : {single_scene_only} → split='{infer_split}'")
     print(f"  ckpt_tag     : {args.ckpt_tag}")
     print(f"  plane_idx    : {args.plane_idx}")
@@ -456,7 +457,7 @@ def main():
         results, avg_psnr = run_inference_for_tag(
             tag, ckpt_path, args, saved_args, device,
             ds, plane_indices, gm_steps, gm_step_size,
-            eta_min, eta_schedule, langevin_noise
+            eta_min, eta_schedule, langevin_noise, channels=channels
         )
         all_summaries[tag] = {
             'avg_psnr': avg_psnr,
