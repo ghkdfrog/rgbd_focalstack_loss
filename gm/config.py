@@ -20,7 +20,7 @@ def get_parser():
 
     # Model
     parser.add_argument('--arch', type=str, default='simple',
-                        choices=['simple', 'deep', 'stride', 'resnet', 'convnext', 'convnext_unet', 'dilated', 'film_resnet'],
+                        choices=['simple', 'deep', 'stride', 'resnet', 'convnext', 'convnext_unet', 'dilated'],
                         help='Model architecture: simple (5-layer), deep (10-layer), stride (downsampling), resnet (ResNet blocks, stride 1), convnext (ConvNeXt blocks), convnext_unet (U-Net with ConvNeXt), or dilated')
     parser.add_argument('--diopter_mode', type=str, default='coc',
                         choices=['spatial', 'coc', 'coc_abs', 'coc_signed'],
@@ -30,6 +30,8 @@ def get_parser():
                         help='Energy output head: fc (Linear 67M, 512x512 only) or conv1x1 (Conv2d 1x1 + sum, resolution-free)')
     parser.add_argument('--channels', type=int, default=256,
                         help='Number of channels in the model')
+    parser.add_argument('--use_film', action='store_true',
+                        help='Enable FiLM conditioning on residual/ConvNeXt blocks (resnet, convnext, convnext_unet)')
 
     # Training
     parser.add_argument('--epochs', type=int, default=50)

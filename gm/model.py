@@ -12,7 +12,7 @@ SimpleCNN Energy-Based Model for Gradient Matching
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.checkpoint import checkpoint  # ✅ 1. 체크포인트 임포트
+
 
 
 class ResidualBlock(nn.Module):
@@ -206,17 +206,15 @@ class SimpleResNet(nn.Module):
     """
     stride=1 을 유지하면서 깊이를 쌓기 위한 ResNet 구조.
     - 입력 채널을 128 (또는 256)까지 확장한 후 Residual Block 반복
-    - fc 에너지 헤드 유지 가능
+    - use_film=True 이면 FiLMResidualBlock 사용 (CoC/diopter 기반 FiLM conditioning)
     """
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4, channels=256):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4, channels=256, use_film=False):
         super(SimpleResNet, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
+        self.use_film = use_film
 
-        # diopter_mode에 따라 입력 채널 수 결정
-        if diopter_mode == 'spatial':
-            in_ch = input_channels + 1
-        elif diopter_mode == 'coc':
+        if diopter_mode in ['spatial', 'coc', 'coc_signed']:
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
@@ -224,18 +222,29 @@ class SimpleResNet(nn.Module):
         # 초기 특징 추출 (해상도 유지)
         self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
         self.conv_expand = nn.Conv2d(64, channels, kernel_size=3, stride=1, padding=1)
-        
-        # Residual Blocks 쌓기 (stride=1 유지, 채널 256)
-        self.res_blocks = nn.Sequential(
-            *[ResidualBlock(channels) for _ in range(num_blocks)]
-        )
+
+        # Residual Blocks
+        if use_film:
+            self.res_blocks = nn.ModuleList(
+                [FiLMResidualBlock(channels) for _ in range(num_blocks)]
+            )
+        else:
+            self.res_blocks = nn.Sequential(
+                *[ResidualBlock(channels) for _ in range(num_blocks)]
+            )
 
         # Energy output head
         if energy_head == 'conv1x1':
             self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
-            # 512x512 해상도 유지 시 파라미터 맞추기 위해 256 채널로 FC 레이어 구성 (기존 SimpleCNN과 동일: 약 67M)
             self.fc = nn.Linear(channels * 512 * 512, 1)
+
+    def _get_cond_map(self, x, diopter, N, H, W):
+        """FiLM conditioning용 condition map 추출"""
+        if self.diopter_mode in ['coc', 'coc_signed']:
+            return x[:, 7:8, :, :]
+        else:  # spatial
+            return diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
 
     def forward(self, x, diopter):
         N, C, H, W = x.shape
@@ -243,17 +252,24 @@ class SimpleResNet(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode == 'coc':
-            pass
+        elif self.diopter_mode in ['coc', 'coc_signed']:
+            pass  # CoC는 이미 x에 포함
+
+        # FiLM: condition map 추출
+        cond_map = self._get_cond_map(x, diopter, N, H, W) if self.use_film else None
 
         x = F.relu(self.conv_in(x))
         x = F.relu(self.conv_expand(x))
-        
-        x = self.res_blocks(x)
+
+        if self.use_film:
+            for block in self.res_blocks:
+                x = block(x, cond_map)
+        else:
+            x = self.res_blocks(x)
 
         if self.energy_head == 'conv1x1':
-            x = self.conv_energy(x)           # (N, 1, H, W)
-            x = torch.sum(x, dim=(2, 3))      # (N, 1) 스칼라 합산
+            x = self.conv_energy(x)
+            x = torch.sum(x, dim=(2, 3))
         else:  # 'fc'
             x = torch.flatten(x, 1)
             x = self.fc(x)
@@ -283,9 +299,7 @@ class ConvNeXtBlock(nn.Module):
 
     def forward(self, x):
         residual = x
-        # Depthwise Conv (NCHW)
         x = self.dwconv(x)
-        # Channel-last로 변환하여 LayerNorm + Pointwise 적용
         x = x.permute(0, 2, 3, 1)   # (N, H, W, C)
         x = self.norm(x)
         x = self.pwconv1(x)
@@ -295,41 +309,75 @@ class ConvNeXtBlock(nn.Module):
         return residual + x
 
 
+class FiLMConvNeXtBlock(nn.Module):
+    """
+    ConvNeXtBlock + SpatialFiLM conditioning.
+    FiLM은 ConvNeXt 연산 후, residual add 직전에 적용.
+    """
+    def __init__(self, channels, expansion=4):
+        super(FiLMConvNeXtBlock, self).__init__()
+        hidden_dim = expansion * channels
+        self.dwconv = nn.Conv2d(channels, channels, kernel_size=7, padding=3, groups=channels)
+        self.norm = nn.LayerNorm(channels, eps=1e-6)
+        self.pwconv1 = nn.Linear(channels, hidden_dim)
+        self.act = nn.GELU()
+        self.pwconv2 = nn.Linear(hidden_dim, channels)
+        self.film = SpatialFiLM(condition_channels=1, feature_channels=channels)
+
+    def forward(self, x, condition_map):
+        residual = x
+        x = self.dwconv(x)
+        x = x.permute(0, 2, 3, 1)
+        x = self.norm(x)
+        x = self.pwconv1(x)
+        x = self.act(x)
+        x = self.pwconv2(x)
+        x = x.permute(0, 3, 1, 2)
+        x = self.film(x, condition_map)
+        return residual + x
+
+
 class SimpleConvNeXt(nn.Module):
     """
     SimpleResNet과 동일한 구조에서 ResidualBlock → ConvNeXtBlock 교체.
-    - Stem: 8ch → 64ch → 256ch (conv_in + conv_expand)
+    - Stem: 8ch → 64ch → channels (conv_in + conv_expand)
     - Body: ConvNeXtBlock × num_blocks (stride=1, 해상도 유지)
     - Head: fc (512×512 전용) 또는 conv1x1 (해상도 무관)
-    
-    expansion=4, num_blocks=9 기준:
-    - ConvNeXt blocks: 9 × ~0.54M ≈ 4.86M
-    - 총 파라미터: SimpleResNet(4블록, ~4.87M)과 거의 동일하게 일치!
+    - use_film=True 이면 FiLMConvNeXtBlock 사용
     """
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=9):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=9, channels=256, use_film=False):
         super(SimpleConvNeXt, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
+        self.use_film = use_film
 
-        if diopter_mode == 'spatial' or diopter_mode == 'coc':
+        if diopter_mode in ['spatial', 'coc', 'coc_signed']:
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
 
-        # Stem: 입력 채널 → 64 → 256 (SimpleResNet과 동일)
         self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
-        self.conv_expand = nn.Conv2d(64, 256, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, channels, kernel_size=3, stride=1, padding=1)
 
-        # ConvNeXt Blocks (stride=1 유지, 채널 256, expansion=4)
-        self.blocks = nn.Sequential(
-            *[ConvNeXtBlock(channels=256, expansion=4) for _ in range(num_blocks)]
-        )
+        if use_film:
+            self.blocks = nn.ModuleList(
+                [FiLMConvNeXtBlock(channels=channels, expansion=4) for _ in range(num_blocks)]
+            )
+        else:
+            self.blocks = nn.Sequential(
+                *[ConvNeXtBlock(channels=channels, expansion=4) for _ in range(num_blocks)]
+            )
 
-        # Energy output head
         if energy_head == 'conv1x1':
-            self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
+            self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
-            self.fc = nn.Linear(256 * 512 * 512, 1)
+            self.fc = nn.Linear(channels * 512 * 512, 1)
+
+    def _get_cond_map(self, x, diopter, N, H, W):
+        if self.diopter_mode in ['coc', 'coc_signed']:
+            return x[:, 7:8, :, :]
+        else:
+            return diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
 
     def forward(self, x, diopter):
         N, C, H, W = x.shape
@@ -337,18 +385,19 @@ class SimpleConvNeXt(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode == 'coc':
+        elif self.diopter_mode in ['coc', 'coc_signed']:
             pass
+
+        cond_map = self._get_cond_map(x, diopter, N, H, W) if self.use_film else None
 
         x = F.relu(self.conv_in(x))
         x = F.relu(self.conv_expand(x))
 
-        # Gradient Checkpointing: VRAM 절약을 위해 블록 단위로 체크포인트 적용
-        for block in self.blocks:
-            if x.requires_grad:
-                x = checkpoint(block, x, use_reentrant=False)
-            else:
-                x = block(x)
+        if self.use_film:
+            for block in self.blocks:
+                x = block(x, cond_map)
+        else:
+            x = self.blocks(x)
 
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)
@@ -361,40 +410,50 @@ class SimpleConvNeXt(nn.Module):
 
 class ConvNeXtUNet(nn.Module):
     """
-    ConvNeXt의 강력한 확장성(expansion=4)을 유지하면서 512x512 해상도에서 발생하는 OOM을 피하기 위한 모델.
-    - Stem(Downsample): 512x512 -> 256x256 으로 축소 (메모리 1/4 감소)
-    - Body: 256x256 해상도에서 ConvNeXtBlock 수행 (expansion=4 사용 가능)
-    - Upsample: 256x256 -> 512x512 복원 (pixel-perfect output 유지)
+    ConvNeXt + U-Net 구조: Downsample → ConvNeXt Body → Upsample.
+    - channels 파라미터로 채널 수 유동 조절 가능
+    - use_film=True 이면 FiLMConvNeXtBlock 사용
     """
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=9):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=9, channels=256, use_film=False):
         super(ConvNeXtUNet, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
+        self.use_film = use_film
 
-        if diopter_mode == 'spatial' or diopter_mode == 'coc':
+        if diopter_mode in ['spatial', 'coc', 'coc_signed']:
             in_ch = input_channels + 1
         else:
             in_ch = input_channels
 
         # 1. Stem & Downsample (512x512 -> 256x256)
         self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
-        self.downsample = nn.Conv2d(64, 256, kernel_size=4, stride=2, padding=1) # 공간 1/2 축소, 채널 확장
+        self.downsample = nn.Conv2d(64, channels, kernel_size=4, stride=2, padding=1)
 
-        # 2. Body: ConvNeXt Blocks (256x256 at 256ch)
-        self.blocks = nn.Sequential(
-            *[ConvNeXtBlock(channels=256, expansion=4) for _ in range(num_blocks)]
-        )
+        # 2. Body: ConvNeXt Blocks
+        if use_film:
+            self.blocks = nn.ModuleList(
+                [FiLMConvNeXtBlock(channels=channels, expansion=4) for _ in range(num_blocks)]
+            )
+        else:
+            self.blocks = nn.Sequential(
+                *[ConvNeXtBlock(channels=channels, expansion=4) for _ in range(num_blocks)]
+            )
 
         # 3. Upsample (256x256 -> 512x512)
-        # kernel=4, stride=2, padding=1 은 정확히 크기를 2배로 만듭니다.
-        self.upsample = nn.ConvTranspose2d(256, 256, kernel_size=4, stride=2, padding=1)
-        self.conv_out = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1)
+        self.upsample = nn.ConvTranspose2d(channels, channels, kernel_size=4, stride=2, padding=1)
+        self.conv_out = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
 
-        # 4. Energy output head (512x512 기준)
+        # 4. Energy output head
         if energy_head == 'conv1x1':
-            self.conv_energy = nn.Conv2d(256, 1, kernel_size=1, stride=1, padding=0)
+            self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
-            self.fc = nn.Linear(256 * 512 * 512, 1)
+            self.fc = nn.Linear(channels * 512 * 512, 1)
+
+    def _get_cond_map(self, x, diopter, N, H, W):
+        if self.diopter_mode in ['coc', 'coc_signed']:
+            return x[:, 7:8, :, :]
+        else:
+            return diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
 
     def forward(self, x, diopter):
         N, C, H, W = x.shape
@@ -402,8 +461,11 @@ class ConvNeXtUNet(nn.Module):
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
-        elif self.diopter_mode == 'coc':
+        elif self.diopter_mode in ['coc', 'coc_signed']:
             pass
+
+        # FiLM: condition map (원본 해상도)
+        cond_map = self._get_cond_map(x, diopter, N, H, W) if self.use_film else None
 
         # Downsample
         x_stem = F.relu(self.conv_in(x))
@@ -411,13 +473,15 @@ class ConvNeXtUNet(nn.Module):
 
         # Body
         x_body = x_down
-        for block in self.blocks:
-            if x_body.requires_grad:
-                x_body = checkpoint(block, x_body, use_reentrant=False)
-            else:
-                x_body = block(x_body)
+        if self.use_film:
+            # FiLM: cond_map도 동일 크기로 다운샘플
+            cond_map_down = F.interpolate(cond_map, size=x_body.shape[2:], mode='bilinear', align_corners=False)
+            for block in self.blocks:
+                x_body = block(x_body, cond_map_down)
+        else:
+            x_body = self.blocks(x_body)
 
-        # Upsample (+ Res connection optional, skipped here for simplicity)
+        # Upsample
         x_up = F.relu(self.upsample(x_body))
         x_out = F.relu(self.conv_out(x_up))
 
@@ -428,7 +492,7 @@ class ConvNeXtUNet(nn.Module):
         else:  # 'fc'
             eng = torch.flatten(x_out, 1)
             eng = self.fc(eng)
-            
+
         return eng
 
 
@@ -536,6 +600,7 @@ class SpatialFiLM(nn.Module):
         beta = self.conv_beta(condition_map)
         return x * (1 + gamma) + beta
 
+
 class FiLMResidualBlock(nn.Module):
     def __init__(self, channels):
         super(FiLMResidualBlock, self).__init__()
@@ -547,69 +612,9 @@ class FiLMResidualBlock(nn.Module):
         residual = x
         out = F.relu(self.conv1(x))
         out = self.conv2(out)
-        out = self.film(out, condition_map) # FiLM 적용
+        out = self.film(out, condition_map)
         out += residual
         return F.relu(out)
-
-class FiLMResNet(nn.Module):
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4, channels=256):
-        super(FiLMResNet, self).__init__()
-        self.diopter_mode = diopter_mode
-        self.energy_head = energy_head
-
-        if diopter_mode in ['spatial', 'coc', 'coc_signed']:
-            in_ch = input_channels + 1  # 7 + 1 = 8채널
-        else:
-            in_ch = input_channels
-
-        self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
-        self.conv_expand = nn.Conv2d(64, channels, kernel_size=3, stride=1, padding=1)
-        
-        self.res_blocks = nn.ModuleList([
-            FiLMResidualBlock(channels) for _ in range(num_blocks)
-        ])
-
-        if energy_head == 'conv1x1':
-            self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
-        else:
-            self.fc = nn.Linear(channels * 512 * 512, 1)
-
-    def forward(self, x, condition):
-        N, C, H, W = x.shape
-
-        # 1. Condition Map 전처리 및 Input Concat
-        if self.diopter_mode == 'spatial':
-            # spatial 모드는 train.py에서 x가 7채널로 들어오므로 여기서 합쳐줍니다.
-            cond_map = condition.view(N, 1, 1, 1).expand(N, 1, H, W)
-            x = torch.cat([x, cond_map], dim=1) # 8채널로 확장
-            
-        elif self.diopter_mode in ['coc', 'coc_signed']:
-            # 핵심 수정: train.py에서 이미 x의 8번째 채널에 CoC 맵을 붙여서 보냅니다! (C=8)
-            # x에 다시 cat을 하면 9채널이 되므로 x는 그대로 둡니다.
-            # 대신 FiLM 블록에 넣어줄 cond_map을 x의 마지막 채널에서 추출합니다.
-            cond_map = x[:, 7:8, :, :] 
-            
-        else:
-            cond_map = None
-
-        # 2. 초기 특징 추출 (x는 정상적인 8채널 상태)
-        x = F.relu(self.conv_in(x))
-        x = F.relu(self.conv_expand(x))
-        
-        # 3. FiLM Residual Blocks 반복 통과
-        for block in self.res_blocks:
-            if cond_map is not None:
-                x = block(x, cond_map)
-
-        # 4. Energy Head 출력
-        if self.energy_head == 'conv1x1':
-            x = self.conv_energy(x)
-            x = torch.sum(x, dim=(2, 3))
-        else:
-            x = torch.flatten(x, 1)
-            x = self.fc(x)
-            
-        return x
 
 
 def save_model_architecture(model, save_path, args=None):

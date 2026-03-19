@@ -26,13 +26,13 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, FiLMResNet
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet
 from gm.config import parse_args
 from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 
-def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256):
+def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256, use_film=False):
     """체크포인트 파일에서 모델 로드"""
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -41,21 +41,25 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     diopter_mode = ckpt.get('diopter_mode', diopter_mode)
     energy_head = ckpt.get('energy_head', energy_head)
     channels = ckpt.get('channels', channels)
+    use_film = ckpt.get('use_film', use_film)
+
+    # 하위 호환: 기존 film_resnet → resnet + use_film=True
+    if arch == 'film_resnet':
+        arch = 'resnet'
+        use_film = True
 
     if arch == 'deep':
         model = SimpleCNNDeep(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'stride':
         model = SimpleCNNStride(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'resnet':
-        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels).to(device)
+        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film).to(device)
     elif arch == 'convnext':
-        model = SimpleConvNeXt(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4).to(device)
+        model = SimpleConvNeXt(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film).to(device)
     elif arch == 'convnext_unet':
-        model = ConvNeXtUNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=9).to(device)
+        model = ConvNeXtUNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=9, channels=channels, use_film=use_film).to(device)
     elif arch == 'dilated':
         model = DilatedNet(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
-    elif arch == 'film_resnet':
-        model = FiLMResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels).to(device)
     else:
         model = SimpleCNN(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
 
@@ -277,13 +281,13 @@ def plot_energy_per_plane(all_step_data, save_dir):
 
 def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
                           ds, plane_indices, gm_steps, gm_step_size,
-                          eta_min, eta_schedule, langevin_noise, channels=256):
+                          eta_min, eta_schedule, langevin_noise, channels=256, use_film=False):
     """하나의 체크포인트 태그에 대해 추론 실행"""
     diopter_mode = saved_args.get('diopter_mode', 'coc')
     energy_head = saved_args.get('energy_head', 'fc')
     arch = saved_args.get('arch', 'simple')
 
-    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels)
+    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels, use_film=use_film)
 
     print(f"\n{'='*50}")
     print(f"  [{tag}] epoch={ckpt_epoch}")
@@ -397,6 +401,9 @@ def main():
     gm_step_size = args.gm_step_size if args.gm_step_size != 0.2 else train_step_size
     channels = args.channels if args.channels != 256 else train_channels
 
+    train_use_film = saved_args.get('use_film', False)
+    use_film = args.use_film or train_use_film
+
     # 새 파라미터: 학습 시 설정 복원, CLI override 가능
     train_eta_schedule = saved_args.get('eta_schedule', 'constant')
     train_eta_min = saved_args.get('eta_min', 0.002)
@@ -457,7 +464,7 @@ def main():
         results, avg_psnr = run_inference_for_tag(
             tag, ckpt_path, args, saved_args, device,
             ds, plane_indices, gm_steps, gm_step_size,
-            eta_min, eta_schedule, langevin_noise, channels=channels
+            eta_min, eta_schedule, langevin_noise, channels=channels, use_film=use_film
         )
         all_summaries[tag] = {
             'avg_psnr': avg_psnr,
