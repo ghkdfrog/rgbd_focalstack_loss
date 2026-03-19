@@ -445,6 +445,7 @@ def main():
             'train_loss': train_loss,
             'val_loss': val_loss,
             'val_psnr': val_psnr,
+            'channels': args.channels
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:

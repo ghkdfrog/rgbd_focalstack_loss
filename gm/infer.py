@@ -32,7 +32,7 @@ from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 
-def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple'):
+def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256):
     """체크포인트 파일에서 모델 로드"""
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -40,13 +40,14 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     # 체크포인트에 저장된 설정 우선
     diopter_mode = ckpt.get('diopter_mode', diopter_mode)
     energy_head = ckpt.get('energy_head', energy_head)
+    channels = ckpt.get('channels', channels)
 
     if arch == 'deep':
         model = SimpleCNNDeep(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'stride':
         model = SimpleCNNStride(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'resnet':
-        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=ckpt['channels']).to(device)
+        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels).to(device)
     elif arch == 'convnext':
         model = SimpleConvNeXt(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4).to(device)
     elif arch == 'convnext_unet':
@@ -54,7 +55,7 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     elif arch == 'dilated':
         model = DilatedNet(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'film_resnet':
-        model = FiLMResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=ckpt['channels']).to(device)
+        model = FiLMResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels).to(device)
     else:
         model = SimpleCNN(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
 
@@ -276,13 +277,13 @@ def plot_energy_per_plane(all_step_data, save_dir):
 
 def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
                           ds, plane_indices, gm_steps, gm_step_size,
-                          eta_min, eta_schedule, langevin_noise):
+                          eta_min, eta_schedule, langevin_noise, channels=256):
     """하나의 체크포인트 태그에 대해 추론 실행"""
     diopter_mode = saved_args.get('diopter_mode', 'coc')
     energy_head = saved_args.get('energy_head', 'fc')
     arch = saved_args.get('arch', 'simple')
 
-    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch)
+    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels)
 
     print(f"\n{'='*50}")
     print(f"  [{tag}] epoch={ckpt_epoch}")
@@ -389,10 +390,12 @@ def main():
     # args.json에서 학습 시 설정 복원 → CLI로 명시하면 override
     train_steps = saved_args.get('gm_steps', 50)
     train_step_size = saved_args.get('gm_step_size', 0.2)
+    train_channels = saved_args.get('channels', 256)
 
     # CLI 기본값과 같으면 args.json 값 사용 (명시적 override 감지)
     gm_steps = args.gm_steps if args.gm_steps != 50 else train_steps
     gm_step_size = args.gm_step_size if args.gm_step_size != 0.2 else train_step_size
+    channels = args.channels if args.channels != 256 else train_channels
 
     # 새 파라미터: 학습 시 설정 복원, CLI override 가능
     train_eta_schedule = saved_args.get('eta_schedule', 'constant')
@@ -432,7 +435,8 @@ def main():
         args.data_dir, generated_data_dir,
         split=infer_split, unmatch_ratio=0,
         diopter_mode=diopter_mode, return_gt=True,
-        single_scene_only=single_scene_only
+        single_scene_only=single_scene_only,
+        channels=channels
     )
 
     # 생성할 plane 목록 결정
