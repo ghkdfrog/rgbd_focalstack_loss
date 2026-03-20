@@ -611,14 +611,8 @@ class ResUNet(nn.Module):
     ResUNet: Encoder-Decoder with long skip connections.
     기존 ResidualBlock / FiLMResidualBlock 을 재활용합니다.
 
-    구조:
-      Stem  → 64ch (H×W)
-      Enc1  → ResBlock(64)  → skip1,  Downsample → 128ch (H/2)
-      Enc2  → ResBlock(128) → skip2,  Downsample → 256ch (H/4)
-      Bottleneck → ResBlock(256) × N  (FiLM 가능)
-      Dec2  → Upsample → cat(skip2) → Conv압축 → ResBlock(128) (H/2)
-      Dec1  → Upsample → cat(skip1) → Conv압축 → ResBlock(64)  (H)
-      Head  → conv1x1(64→1) + sum  →  스칼라 에너지
+    use_film=True 이면 인코더·바틀넥·디코더 전체에 FiLM 적용.
+    각 레벨의 condition map 은 해당 해상도로 bilinear resize.
     """
     def __init__(self, input_channels=7, diopter_mode='spatial',
                  energy_head='conv1x1', base_channels=64,
@@ -641,11 +635,11 @@ class ResUNet(nn.Module):
 
         # ── 2. Encoder ──
         # Level 1: bc → bc (H×W)
-        self.enc1_block = ResidualBlock(bc)
+        self.enc1_block = FiLMResidualBlock(bc) if use_film else ResidualBlock(bc)
         self.down1 = nn.Conv2d(bc, bc * 2, kernel_size=3, stride=2, padding=1)  # → 128ch, H/2
 
         # Level 2: bc*2 → bc*2 (H/2×W/2)
-        self.enc2_block = ResidualBlock(bc * 2)
+        self.enc2_block = FiLMResidualBlock(bc * 2) if use_film else ResidualBlock(bc * 2)
         self.down2 = nn.Conv2d(bc * 2, bc * 4, kernel_size=3, stride=2, padding=1)  # → 256ch, H/4
 
         # ── 3. Bottleneck: bc*4 채널, H/4 해상도 ──
@@ -662,12 +656,12 @@ class ResUNet(nn.Module):
         # Up-Level 2: bc*4 → bc*2 (H/2)
         self.up2 = nn.ConvTranspose2d(bc * 4, bc * 2, kernel_size=4, stride=2, padding=1)
         self.dec2_fuse = nn.Conv2d(bc * 4, bc * 2, kernel_size=3, stride=1, padding=1)  # cat후 채널 압축
-        self.dec2_block = ResidualBlock(bc * 2)
+        self.dec2_block = FiLMResidualBlock(bc * 2) if use_film else ResidualBlock(bc * 2)
 
         # Up-Level 1: bc*2 → bc (H)
         self.up1 = nn.ConvTranspose2d(bc * 2, bc, kernel_size=4, stride=2, padding=1)
         self.dec1_fuse = nn.Conv2d(bc * 2, bc, kernel_size=3, stride=1, padding=1)  # cat후 채널 압축
-        self.dec1_block = ResidualBlock(bc)
+        self.dec1_block = FiLMResidualBlock(bc) if use_film else ResidualBlock(bc)
 
         # ── 5. Energy Head ──
         if energy_head == 'conv1x1':
@@ -699,34 +693,50 @@ class ResUNet(nn.Module):
         x_stem = F.relu(self.stem(x))  # (N, 64, H, W)
 
         # ── Encoder Level 1 ──
-        skip1 = self.enc1_block(x_stem)          # (N, 64, H, W)
-        x_d1 = F.relu(self.down1(skip1))          # (N, 128, H/2, W/2)
+        if self.use_film:
+            skip1 = self.enc1_block(x_stem, cond_map)  # (N, 64, H, W)
+        else:
+            skip1 = self.enc1_block(x_stem)
+        x_d1 = F.relu(self.down1(skip1))               # (N, 128, H/2, W/2)
 
         # ── Encoder Level 2 ──
-        skip2 = self.enc2_block(x_d1)             # (N, 128, H/2, W/2)
-        x_d2 = F.relu(self.down2(skip2))          # (N, 256, H/4, W/4)
+        if self.use_film:
+            cond_half = F.interpolate(cond_map, size=x_d1.shape[2:],
+                                      mode='bilinear', align_corners=False)
+            skip2 = self.enc2_block(x_d1, cond_half)   # (N, 128, H/2, W/2)
+        else:
+            skip2 = self.enc2_block(x_d1)
+        x_d2 = F.relu(self.down2(skip2))               # (N, 256, H/4, W/4)
 
         # ── Bottleneck ──
         x_bn = x_d2
         if self.use_film:
-            cond_bn = F.interpolate(cond_map, size=x_bn.shape[2:],
-                                    mode='bilinear', align_corners=False)
+            cond_quarter = F.interpolate(cond_map, size=x_bn.shape[2:],
+                                         mode='bilinear', align_corners=False)
             for block in self.bottleneck:
-                x_bn = block(x_bn, cond_bn)
+                x_bn = block(x_bn, cond_quarter)
         else:
-            x_bn = self.bottleneck(x_bn)          # (N, 256, H/4, W/4)
+            x_bn = self.bottleneck(x_bn)               # (N, 256, H/4, W/4)
 
         # ── Decoder Up-Level 2 ──
-        x_up2 = F.relu(self.up2(x_bn))            # (N, 128, H/2, W/2)
-        x_up2 = torch.cat([x_up2, skip2], dim=1)  # 🔥 (N, 256, H/2, W/2)
-        x_up2 = F.relu(self.dec2_fuse(x_up2))     # (N, 128, H/2, W/2)
-        x_up2 = self.dec2_block(x_up2)            # (N, 128, H/2, W/2)
+        x_up2 = F.relu(self.up2(x_bn))                 # (N, 128, H/2, W/2)
+        x_up2 = torch.cat([x_up2, skip2], dim=1)       # (N, 256, H/2, W/2)
+        x_up2 = F.relu(self.dec2_fuse(x_up2))          # (N, 128, H/2, W/2)
+        if self.use_film:
+            cond_half = F.interpolate(cond_map, size=x_up2.shape[2:],
+                                      mode='bilinear', align_corners=False)
+            x_up2 = self.dec2_block(x_up2, cond_half)  # (N, 128, H/2, W/2)
+        else:
+            x_up2 = self.dec2_block(x_up2)
 
         # ── Decoder Up-Level 1 ──
-        x_up1 = F.relu(self.up1(x_up2))           # (N, 64, H, W)
-        x_up1 = torch.cat([x_up1, skip1], dim=1)  # 🔥 (N, 128, H, W)
-        x_up1 = F.relu(self.dec1_fuse(x_up1))     # (N, 64, H, W)
-        x_up1 = self.dec1_block(x_up1)            # (N, 64, H, W)
+        x_up1 = F.relu(self.up1(x_up2))                # (N, 64, H, W)
+        x_up1 = torch.cat([x_up1, skip1], dim=1)       # (N, 128, H, W)
+        x_up1 = F.relu(self.dec1_fuse(x_up1))          # (N, 64, H, W)
+        if self.use_film:
+            x_up1 = self.dec1_block(x_up1, cond_map)   # (N, 64, H, W) — 원본 해상도
+        else:
+            x_up1 = self.dec1_block(x_up1)
 
         # ── Energy Head ──
         if self.energy_head == 'conv1x1':
