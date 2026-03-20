@@ -25,7 +25,7 @@ from tqdm import tqdm
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, save_model_architecture
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, save_model_architecture
 from gm.config import parse_args
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
@@ -329,6 +329,15 @@ def main():
             energy_head=args.energy_head,
             num_blocks=4,
             channels=args.channels,
+            use_film=args.use_film
+        ).to(device)
+    elif args.arch == 'resunet':
+        model = ResUNet(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head,
+            base_channels=args.channels,
+            num_bottleneck_blocks=3,
             use_film=args.use_film
         ).to(device)
     elif args.arch == 'convnext':

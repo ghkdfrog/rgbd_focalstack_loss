@@ -58,12 +58,15 @@
 
 | Run | 설정 | Best Epoch | Best PSNR (avg p0/p20/p39) | 비고 |
 |:---|:---|:---:|---:|:---|
-| `0318_130552` | **coc_signed**, **film_resnet** 128ch, fc, **linear**, 100ep | **best_psnr** | **29.71 dB** (27.3/30.5/31.3) | 🥇 **전체 최고 성능**. FiLM+coc_signed 조합이 p39에서 31.3dB 달성 |
+| `0319_150917` | coc, **film_resnet** 128ch, fc, **linear**, 100ep | **학습중** | **30.09 dB** (27.5/30.7/32.1) | 🥇 **전체 최고 성능 갱신**. 중간 체크포인트임에도 기존 (29.71)을 크게 상회 |
+| `0318_130552` | **coc_signed**, **film_resnet** 128ch, fc, **linear**, 100ep | **best_psnr** | **29.71 dB** (27.3/30.5/31.3) | 🥈 이전 최고 성능. FiLM+coc_signed 조합이 p39에서 31.3dB 달성 |
 | `0318_112238` | coc, **resnet** 128ch, fc, **linear**, 50ep | **best_psnr(19ep)** | **27.59 dB** (26.1/29.6/27.1) | ResNet 128ch. 256ch(0314_160511, 27.86)과 유사한 성능 |
 | `0317_034204` | coc, **convnext_unet**, **conv1x1**, **linear**, 100ep | **best** | **25.82 dB** (25.4/26.5/25.5) | ConvNeXtUNet+conv1x1. plane별 편차 작음 |
 | `0317_033217` | coc, **convnext_unet**, fc, **linear**, 100ep | **best** | **25.12 dB** (24.7/25.9/24.8) | ConvNeXtUNet+fc. conv1x1보다 약간 낮음 |
 | `0318_202001` | coc, **resnet** 128ch, **conv1x1**, **linear**, 50ep | **best_psnr(8ep)** | **24.96 dB** (24.8/25.4/24.7) | ResNet 128ch+conv1x1. fc(27.59)보다 낮지만 안정적 |
 | `0318_132413` | **coc_abs**, **dilated**, **conv1x1**, **linear**, 50ep | **best_psnr(50ep)** | **22.40 dB** (21.3/23.7/22.2) | DilatedNet+coc_abs. 새 diopter 모드 실험 |
+| `0319_150817` | **coc_signed**, **resnet** 128ch, fc, **linear**, 100ep | **학습중** | **27.47 dB** (25.9/29.4/27.1) | 중간 체크포인트 추론. 최고 기록(29.71)의 구조(FiLM) 변형 대조군으로 보임 |
+| `0319_151904` | **coc_abs**, **convnext_unet** 128ch, **conv1x1**, **linear**, 100ep | **학습중** | **26.24 dB** (25.6/27.1/26.0) | 중간 체크포인트 추론. conv1x1+coc_abs 조합의 한계점 확인 |
 
 ### 🌐 Multi-Scene Runs (전체 데이터셋)
 
@@ -100,6 +103,12 @@
 - Multi-scene 학습이 아직 **충분한 에폭으로 돌리지 않음** (5ep only)
 - ConvNeXtUNet + FiLM 조합은 아직 미실험
 - Langevin noise 스케일 문제 미해결
+
+### 🗑️ 미완료 / 로그 없음 (Unrecorded & Incomplete Runs)
+폴더는 생성되었으나, `log.txt` 등 학습 결과가 기록되지 않아 중단되거나 바로 실패한 run 목록입니다.
+- `0306_221916`, `0306_222752`, `0307_094134`, `0307_094147`, `0307_172330`, `0308_164208`, `0308_212402`, `0309_084328`, `0309_175428` (`coc`, constant)
+- `0307_172316`, `0308_164220` (`spatial`, constant)
+- `0312_120655`, `0312_120804` (`coc`, base linear 설정 시도, `120940` 등으로 재시작됨)
 
 ---
 

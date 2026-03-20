@@ -606,6 +606,138 @@ class FiLMResidualBlock(nn.Module):
         return F.relu(out)
 
 
+class ResUNet(nn.Module):
+    """
+    ResUNet: Encoder-Decoder with long skip connections.
+    기존 ResidualBlock / FiLMResidualBlock 을 재활용합니다.
+
+    구조:
+      Stem  → 64ch (H×W)
+      Enc1  → ResBlock(64)  → skip1,  Downsample → 128ch (H/2)
+      Enc2  → ResBlock(128) → skip2,  Downsample → 256ch (H/4)
+      Bottleneck → ResBlock(256) × N  (FiLM 가능)
+      Dec2  → Upsample → cat(skip2) → Conv압축 → ResBlock(128) (H/2)
+      Dec1  → Upsample → cat(skip1) → Conv압축 → ResBlock(64)  (H)
+      Head  → conv1x1(64→1) + sum  →  스칼라 에너지
+    """
+    def __init__(self, input_channels=7, diopter_mode='spatial',
+                 energy_head='conv1x1', base_channels=64,
+                 num_bottleneck_blocks=3, use_film=False):
+        super(ResUNet, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+        self.use_film = use_film
+
+        bc = base_channels  # 64
+
+        # ── 입력 채널 결정 ──
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
+            in_ch = input_channels + 1
+        else:
+            in_ch = input_channels
+
+        # ── 1. Stem: in_ch → bc (해상도 유지) ──
+        self.stem = nn.Conv2d(in_ch, bc, kernel_size=3, stride=1, padding=1)
+
+        # ── 2. Encoder ──
+        # Level 1: bc → bc (H×W)
+        self.enc1_block = ResidualBlock(bc)
+        self.down1 = nn.Conv2d(bc, bc * 2, kernel_size=3, stride=2, padding=1)  # → 128ch, H/2
+
+        # Level 2: bc*2 → bc*2 (H/2×W/2)
+        self.enc2_block = ResidualBlock(bc * 2)
+        self.down2 = nn.Conv2d(bc * 2, bc * 4, kernel_size=3, stride=2, padding=1)  # → 256ch, H/4
+
+        # ── 3. Bottleneck: bc*4 채널, H/4 해상도 ──
+        if use_film:
+            self.bottleneck = nn.ModuleList(
+                [FiLMResidualBlock(bc * 4) for _ in range(num_bottleneck_blocks)]
+            )
+        else:
+            self.bottleneck = nn.Sequential(
+                *[ResidualBlock(bc * 4) for _ in range(num_bottleneck_blocks)]
+            )
+
+        # ── 4. Decoder ──
+        # Up-Level 2: bc*4 → bc*2 (H/2)
+        self.up2 = nn.ConvTranspose2d(bc * 4, bc * 2, kernel_size=4, stride=2, padding=1)
+        self.dec2_fuse = nn.Conv2d(bc * 4, bc * 2, kernel_size=3, stride=1, padding=1)  # cat후 채널 압축
+        self.dec2_block = ResidualBlock(bc * 2)
+
+        # Up-Level 1: bc*2 → bc (H)
+        self.up1 = nn.ConvTranspose2d(bc * 2, bc, kernel_size=4, stride=2, padding=1)
+        self.dec1_fuse = nn.Conv2d(bc * 2, bc, kernel_size=3, stride=1, padding=1)  # cat후 채널 압축
+        self.dec1_block = ResidualBlock(bc)
+
+        # ── 5. Energy Head ──
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            self.fc = nn.Linear(bc * 512 * 512, 1)
+
+    def _get_cond_map(self, x, diopter, N, H, W):
+        """FiLM conditioning 용 condition map 추출"""
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            return x[:, 7:8, :, :]  # CoC 채널
+        else:  # spatial
+            return diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        # ── diopter 채널 결합 ──
+        if self.diopter_mode == 'spatial':
+            diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x = torch.cat([x, diopter_map], dim=1)
+        elif self.diopter_mode in ['coc', 'coc_abs', 'coc_signed']:
+            pass  # CoC는 이미 x에 포함
+
+        # FiLM: condition map (원본 해상도)
+        cond_map = self._get_cond_map(x, diopter, N, H, W) if self.use_film else None
+
+        # ── Stem ──
+        x_stem = F.relu(self.stem(x))  # (N, 64, H, W)
+
+        # ── Encoder Level 1 ──
+        skip1 = self.enc1_block(x_stem)          # (N, 64, H, W)
+        x_d1 = F.relu(self.down1(skip1))          # (N, 128, H/2, W/2)
+
+        # ── Encoder Level 2 ──
+        skip2 = self.enc2_block(x_d1)             # (N, 128, H/2, W/2)
+        x_d2 = F.relu(self.down2(skip2))          # (N, 256, H/4, W/4)
+
+        # ── Bottleneck ──
+        x_bn = x_d2
+        if self.use_film:
+            cond_bn = F.interpolate(cond_map, size=x_bn.shape[2:],
+                                    mode='bilinear', align_corners=False)
+            for block in self.bottleneck:
+                x_bn = block(x_bn, cond_bn)
+        else:
+            x_bn = self.bottleneck(x_bn)          # (N, 256, H/4, W/4)
+
+        # ── Decoder Up-Level 2 ──
+        x_up2 = F.relu(self.up2(x_bn))            # (N, 128, H/2, W/2)
+        x_up2 = torch.cat([x_up2, skip2], dim=1)  # 🔥 (N, 256, H/2, W/2)
+        x_up2 = F.relu(self.dec2_fuse(x_up2))     # (N, 128, H/2, W/2)
+        x_up2 = self.dec2_block(x_up2)            # (N, 128, H/2, W/2)
+
+        # ── Decoder Up-Level 1 ──
+        x_up1 = F.relu(self.up1(x_up2))           # (N, 64, H, W)
+        x_up1 = torch.cat([x_up1, skip1], dim=1)  # 🔥 (N, 128, H, W)
+        x_up1 = F.relu(self.dec1_fuse(x_up1))     # (N, 64, H, W)
+        x_up1 = self.dec1_block(x_up1)            # (N, 64, H, W)
+
+        # ── Energy Head ──
+        if self.energy_head == 'conv1x1':
+            eng = self.conv_energy(x_up1)          # (N, 1, H, W)
+            eng = torch.sum(eng, dim=(2, 3))       # (N, 1)
+        else:  # 'fc'
+            eng = torch.flatten(x_up1, 1)
+            eng = self.fc(eng)
+        return eng
+
+
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""
     lines = []
