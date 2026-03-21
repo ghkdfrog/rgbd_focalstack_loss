@@ -201,7 +201,8 @@ class SimpleResNet(nn.Module):
     stride=1 을 유지하면서 깊이를 쌓기 위한 ResNet 구조.
     - 입력 채널을 128 (또는 256)까지 확장한 후 Residual Block 반복
     - use_film=True 이면 FiLMResidualBlock 사용 (CoC/diopter 기반 FiLM conditioning)
-    - long_skip=True 이면 conv_expand 출력을 energy head 직전에 skip connection으로 결합
+    - long_skip=True 이면 블록 간 1-layer interval element-wise add skip connection 적용
+      (DeepFocus 스타일: block[i] input = block[i-1] output + block[i-2] output)
     """
     def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4, channels=256, use_film=False, long_skip=False):
         super(SimpleResNet, self).__init__()
@@ -219,19 +220,16 @@ class SimpleResNet(nn.Module):
         self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
         self.conv_expand = nn.Conv2d(64, channels, kernel_size=3, stride=1, padding=1)
 
-        # Residual Blocks
-        if use_film:
+        # Residual Blocks (long_skip 시 개별 블록 접근 필요 → 항상 ModuleList)
+        if use_film or long_skip:
             self.res_blocks = nn.ModuleList(
-                [FiLMResidualBlock(channels) for _ in range(num_blocks)]
+                [FiLMResidualBlock(channels) if use_film else ResidualBlock(channels)
+                 for _ in range(num_blocks)]
             )
         else:
             self.res_blocks = nn.Sequential(
                 *[ResidualBlock(channels) for _ in range(num_blocks)]
             )
-
-        # Long skip: conv_expand 출력을 head 직전에 concat → 1x1 conv로 채널 복원
-        if long_skip:
-            self.skip_fuse = nn.Conv2d(channels * 2, channels, kernel_size=1, stride=1, padding=0)
 
         # Energy output head
         if energy_head == 'conv1x1':
@@ -261,18 +259,20 @@ class SimpleResNet(nn.Module):
         x = F.relu(self.conv_in(x))
         x = F.relu(self.conv_expand(x))
 
-        # long skip: conv_expand 출력 저장
-        x_early = x if self.long_skip else None
-
-        if self.use_film:
+        if self.long_skip:
+            # DeepFocus 스타일: 1-layer interval element-wise add
+            # block i 의 입력 = block[i-1] 출력 + block[i-2] 출력 (i >= 2)
+            outputs = []  # 각 블록 출력 기록
+            for i, block in enumerate(self.res_blocks):
+                if i >= 2:
+                    x = x + outputs[i - 2]  # 2단계 전 블록 출력을 add
+                x = block(x, cond_map) if self.use_film else block(x)
+                outputs.append(x)
+        elif self.use_film:
             for block in self.res_blocks:
                 x = block(x, cond_map)
         else:
             x = self.res_blocks(x)
-
-        # long skip: 초기 특징과 심층 특징 결합
-        if self.long_skip:
-            x = F.relu(self.skip_fuse(torch.cat([x, x_early], dim=1)))
 
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)
