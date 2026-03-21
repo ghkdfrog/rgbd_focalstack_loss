@@ -20,8 +20,8 @@ def get_parser():
 
     # Model
     parser.add_argument('--arch', type=str, default='simple',
-                        choices=['simple', 'deep', 'stride', 'resnet', 'resunet', 'convnext', 'convnext_unet', 'dilated'],
-                        help='Model architecture: simple (5-layer), deep (10-layer), stride (downsampling), resnet (ResNet blocks, stride 1), resunet (ResUNet encoder-decoder), convnext (ConvNeXt blocks), convnext_unet (U-Net with ConvNeXt), or dilated')
+                        choices=['simple', 'deep', 'stride', 'resnet', 'resunet', 'convnext', 'convnext_unet', 'dilated', 'interleave_resnet'],
+                        help='Model architecture')
     parser.add_argument('--diopter_mode', type=str, default='coc',
                         choices=['spatial', 'coc', 'coc_abs', 'coc_signed'],
                         help='Diopter conditioning mode')
@@ -34,6 +34,8 @@ def get_parser():
                         help='Enable FiLM conditioning on residual/ConvNeXt blocks (resnet, convnext, convnext_unet)')
     parser.add_argument('--long_skip', action='store_true',
                         help='Enable long skip connection from conv_expand to energy head (resnet only)')
+    parser.add_argument('--interleave_rate', type=int, default=2,
+                        help='Pixel shuffle interleave rate for interleave_resnet (default: 2)')
 
     # Training
     parser.add_argument('--epochs', type=int, default=50)

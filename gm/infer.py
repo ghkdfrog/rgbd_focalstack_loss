@@ -26,13 +26,14 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet
+from gm.model import (SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, ResUNet,
+                      SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet)
 from gm.config import parse_args
 from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 
-def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256, use_film=False, long_skip=False):
+def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256, use_film=False, long_skip=False, interleave_rate=2):
     """체크포인트 파일에서 모델 로드"""
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -43,6 +44,7 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     channels = ckpt.get('channels', channels)
     use_film = ckpt.get('use_film', use_film)
     long_skip = ckpt.get('long_skip', long_skip)
+    interleave_rate = ckpt.get('interleave_rate', interleave_rate)
 
     # 하위 호환: 기존 film_resnet → resnet + use_film=True
     if arch == 'film_resnet':
@@ -63,6 +65,10 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
         model = ConvNeXtUNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=9, channels=channels, use_film=use_film).to(device)
     elif arch == 'dilated':
         model = DilatedNet(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
+    elif arch == 'interleave_resnet':
+        model = InterleaveResNet(diopter_mode=diopter_mode, energy_head=energy_head,
+                                num_blocks=4, channels=channels, use_film=use_film,
+                                interleave_rate=interleave_rate).to(device)
     else:
         model = SimpleCNN(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
 
@@ -284,13 +290,13 @@ def plot_energy_per_plane(all_step_data, save_dir):
 
 def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
                           ds, plane_indices, gm_steps, gm_step_size,
-                          eta_min, eta_schedule, langevin_noise, channels=256, use_film=False, long_skip=False):
+                          eta_min, eta_schedule, langevin_noise, channels=256, use_film=False, long_skip=False, interleave_rate=2):
     """하나의 체크포인트 태그에 대해 추론 실행"""
     diopter_mode = saved_args.get('diopter_mode', 'coc')
     energy_head = saved_args.get('energy_head', 'fc')
     arch = saved_args.get('arch', 'simple')
 
-    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels, use_film=use_film, long_skip=long_skip)
+    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels, use_film=use_film, long_skip=long_skip, interleave_rate=interleave_rate)
 
     print(f"\n{'='*50}")
     print(f"  [{tag}] epoch={ckpt_epoch}")
@@ -410,6 +416,9 @@ def main():
     train_long_skip = saved_args.get('long_skip', False)
     long_skip = args.long_skip or train_long_skip
 
+    train_interleave_rate = saved_args.get('interleave_rate', 2)
+    interleave_rate = args.interleave_rate if args.interleave_rate != 2 else train_interleave_rate
+
     # 새 파라미터: 학습 시 설정 복원, CLI override 가능
     train_eta_schedule = saved_args.get('eta_schedule', 'constant')
     train_eta_min = saved_args.get('eta_min', 0.002)
@@ -470,7 +479,7 @@ def main():
         results, avg_psnr = run_inference_for_tag(
             tag, ckpt_path, args, saved_args, device,
             ds, plane_indices, gm_steps, gm_step_size,
-            eta_min, eta_schedule, langevin_noise, channels=channels, use_film=use_film, long_skip=long_skip
+            eta_min, eta_schedule, langevin_noise, channels=channels, use_film=use_film, long_skip=long_skip, interleave_rate=interleave_rate
         )
         all_summaries[tag] = {
             'avg_psnr': avg_psnr,

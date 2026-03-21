@@ -619,6 +619,121 @@ class FiLMResidualBlock(nn.Module):
         return F.relu(out)
 
 
+class InterleaveResNet(nn.Module):
+    """
+    SimpleResNet + Pixel Shuffle (Interleave/Deinterleave) 구조.
+
+    DeepFocus의 interleave 기법 적용:
+      8ch 입력 → pixel_unshuffle(r) → conv_in(channels) → ResBlocks(channels)
+      → conv_pre_shuffle(3*r²) → pixel_shuffle(r) → 3ch → energy head
+
+    interleave_rate=2 기준:
+      (8, 512, 512) → unshuffle → (32, 256, 256) → stem → (256, 256, 256)
+      → ResBlocks → (256, 256, 256) → conv → (12, 256, 256) → shuffle → (3, 512, 512)
+      → conv1x1(3→1) + sum  또는  fc(3*512*512, 1)
+
+    Parameters:
+        input_channels: RGBD(4) + pred(3) = 7 (기본)
+        diopter_mode: 'spatial' | 'coc' | 'coc_abs' | 'coc_signed'
+        energy_head: 'fc' | 'conv1x1'
+        num_blocks: Residual Block 수
+        channels: 은닉층 채널 수 (기본 256)
+        use_film: FiLM conditioning 활성화
+        interleave_rate: pixel shuffle 배율 (2 = 해상도 1/2, 채널 ×4)
+    """
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='conv1x1',
+                 num_blocks=4, channels=256, use_film=False, interleave_rate=2):
+        super(InterleaveResNet, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+        self.use_film = use_film
+        self.interleave_rate = interleave_rate
+        r2 = interleave_rate ** 2
+        out_ch = 3  # pixel_shuffle 후 최종 채널
+
+        if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
+            in_ch = input_channels + 1
+        else:
+            in_ch = input_channels
+
+        interleaved_ch = in_ch * r2  # e.g. 8 * 4 = 32
+
+        # Stem: interleaved → channels (e.g. 32 → 256)
+        self.conv_in = nn.Conv2d(interleaved_ch, channels, kernel_size=3, stride=1, padding=1)
+
+        # Residual Blocks (낮은 해상도에서 동작)
+        if use_film:
+            self.res_blocks = nn.ModuleList(
+                [FiLMResidualBlock(channels) for _ in range(num_blocks)]
+            )
+        else:
+            self.res_blocks = nn.Sequential(
+                *[ResidualBlock(channels) for _ in range(num_blocks)]
+            )
+
+        # Pre-shuffle: channels → out_ch * r² (e.g. 256 → 12)
+        self.conv_pre_shuffle = nn.Conv2d(channels, out_ch * r2, kernel_size=3, stride=1, padding=1)
+
+        # Energy head (pixel_shuffle 후 out_ch 채널 상태에서 동작)
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(out_ch, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            self.fc = nn.Linear(out_ch * 512 * 512, 1)
+
+    def _get_cond_map(self, x, diopter, N, H, W):
+        """FiLM conditioning용 condition map 추출 (원본 해상도)"""
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            return x[:, 7:8, :, :]
+        else:  # spatial
+            return diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+        r = self.interleave_rate
+
+        # ── diopter 채널 결합 (원본 해상도) → 8ch ──
+        if self.diopter_mode == 'spatial':
+            diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x = torch.cat([x, diopter_map], dim=1)
+        elif self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            pass  # CoC는 이미 x에 포함
+
+        # FiLM condition map (원본 해상도)
+        cond_map = self._get_cond_map(x, diopter, N, H, W) if self.use_film else None
+
+        # ── Interleave: (N, 8, H, W) → (N, 32, H/r, W/r) ──
+        x = F.pixel_unshuffle(x, r)
+
+        # ── Stem: 32 → channels ──
+        x = F.relu(self.conv_in(x))
+
+        # ── Residual Blocks (축소 해상도) ──
+        if self.use_film:
+            cond_map_small = F.interpolate(
+                cond_map, size=(H // r, W // r),
+                mode='bilinear', align_corners=False
+            )
+            for block in self.res_blocks:
+                x = block(x, cond_map_small)
+        else:
+            x = self.res_blocks(x)
+
+        # ── Pre-shuffle: channels → 3*r² (e.g. 256→12) ──
+        x = self.conv_pre_shuffle(x)
+
+        # ── Deinterleave: (N, 12, H/r, W/r) → (N, 3, H, W) ──
+        x = F.pixel_shuffle(x, r)
+
+        # ── Energy Head (3ch, 원본 해상도) ──
+        if self.energy_head == 'conv1x1':
+            x = self.conv_energy(x)       # (N, 3, H, W) → (N, 1, H, W)
+            x = torch.sum(x, dim=(2, 3))  # (N, 1)
+        else:  # 'fc'
+            x = torch.flatten(x, 1)
+            x = self.fc(x)
+        return x
+
+
 class ResUNet(nn.Module):
     """
     ResUNet: Encoder-Decoder with long skip connections.
