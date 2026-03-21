@@ -329,7 +329,8 @@ def main():
             energy_head=args.energy_head,
             num_blocks=4,
             channels=args.channels,
-            use_film=args.use_film
+            use_film=args.use_film,
+            long_skip=args.long_skip
         ).to(device)
     elif args.arch == 'resunet':
         model = ResUNet(
@@ -452,7 +453,8 @@ def main():
             'val_loss': val_loss,
             'val_psnr': val_psnr,
             'channels': args.channels,
-            'use_film': args.use_film
+            'use_film': args.use_film,
+            'long_skip': args.long_skip
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:

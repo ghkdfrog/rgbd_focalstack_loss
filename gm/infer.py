@@ -32,7 +32,7 @@ from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 
-def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256, use_film=False):
+def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256, use_film=False, long_skip=False):
     """체크포인트 파일에서 모델 로드"""
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
@@ -42,6 +42,7 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     energy_head = ckpt.get('energy_head', energy_head)
     channels = ckpt.get('channels', channels)
     use_film = ckpt.get('use_film', use_film)
+    long_skip = ckpt.get('long_skip', long_skip)
 
     # 하위 호환: 기존 film_resnet → resnet + use_film=True
     if arch == 'film_resnet':
@@ -53,7 +54,7 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     elif arch == 'stride':
         model = SimpleCNNStride(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'resnet':
-        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film).to(device)
+        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip).to(device)
     elif arch == 'resunet':
         model = ResUNet(diopter_mode=diopter_mode, energy_head=energy_head, base_channels=channels, num_bottleneck_blocks=3, use_film=use_film).to(device)
     elif arch == 'convnext':
@@ -283,13 +284,13 @@ def plot_energy_per_plane(all_step_data, save_dir):
 
 def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
                           ds, plane_indices, gm_steps, gm_step_size,
-                          eta_min, eta_schedule, langevin_noise, channels=256, use_film=False):
+                          eta_min, eta_schedule, langevin_noise, channels=256, use_film=False, long_skip=False):
     """하나의 체크포인트 태그에 대해 추론 실행"""
     diopter_mode = saved_args.get('diopter_mode', 'coc')
     energy_head = saved_args.get('energy_head', 'fc')
     arch = saved_args.get('arch', 'simple')
 
-    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels, use_film=use_film)
+    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels, use_film=use_film, long_skip=long_skip)
 
     print(f"\n{'='*50}")
     print(f"  [{tag}] epoch={ckpt_epoch}")
@@ -406,6 +407,9 @@ def main():
     train_use_film = saved_args.get('use_film', False)
     use_film = args.use_film or train_use_film
 
+    train_long_skip = saved_args.get('long_skip', False)
+    long_skip = args.long_skip or train_long_skip
+
     # 새 파라미터: 학습 시 설정 복원, CLI override 가능
     train_eta_schedule = saved_args.get('eta_schedule', 'constant')
     train_eta_min = saved_args.get('eta_min', 0.002)
@@ -466,7 +470,7 @@ def main():
         results, avg_psnr = run_inference_for_tag(
             tag, ckpt_path, args, saved_args, device,
             ds, plane_indices, gm_steps, gm_step_size,
-            eta_min, eta_schedule, langevin_noise, channels=channels, use_film=use_film
+            eta_min, eta_schedule, langevin_noise, channels=channels, use_film=use_film, long_skip=long_skip
         )
         all_summaries[tag] = {
             'avg_psnr': avg_psnr,

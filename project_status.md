@@ -67,6 +67,8 @@
 | `0318_132413` | **coc_abs**, **dilated**, **conv1x1**, **linear**, 50ep | **best_psnr(50ep)** | **22.40 dB** (21.3/23.7/22.2) | DilatedNet+coc_abs. 새 diopter 모드 실험 |
 | `0319_150817` | **coc_signed**, **resnet** 128ch, fc, **linear**, 100ep | **학습중** | **27.47 dB** (25.9/29.4/27.1) | 중간 체크포인트 추론. 최고 기록(29.71)의 구조(FiLM) 변형 대조군으로 보임 |
 | `0319_151904` | **coc_abs**, **convnext_unet** 128ch, **conv1x1**, **linear**, 100ep | **학습중** | **26.24 dB** (25.6/27.1/26.0) | 중간 체크포인트 추론. conv1x1+coc_abs 조합의 한계점 확인 |
+| `0320_063400` | coc, **resunet** 64ch, fc, **linear**, 100ep | **학습중** | **27.72 dB** (26.3/29.2/27.7) | 중간 체크포인트 추론. ResUNet 64ch + fc. conv1x1 대비 성능 확연히 우수 (+4dB) |
+| `0320_055937` | coc, **resunet** 64ch, **conv1x1**, **linear**, 100ep | **학습중** | **23.71 dB** (23.4/24.1/23.7) | 중간 체크포인트 추론. ResUNet 64ch + conv1x1 |
 
 ### 🌐 Multi-Scene Runs (전체 데이터셋)
 

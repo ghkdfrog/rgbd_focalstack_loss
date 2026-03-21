@@ -32,6 +32,8 @@ def get_parser():
                         help='Number of channels in the model')
     parser.add_argument('--use_film', action='store_true',
                         help='Enable FiLM conditioning on residual/ConvNeXt blocks (resnet, convnext, convnext_unet)')
+    parser.add_argument('--long_skip', action='store_true',
+                        help='Enable long skip connection from conv_expand to energy head (resnet only)')
 
     # Training
     parser.add_argument('--epochs', type=int, default=50)
