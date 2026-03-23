@@ -330,7 +330,9 @@ def main():
             num_blocks=4,
             channels=args.channels,
             use_film=args.use_film,
-            long_skip=args.long_skip
+            long_skip=args.long_skip,
+            use_sharp_prior=args.sharp_prior,
+            activation=args.activation
         ).to(device)
     elif args.arch == 'resnet_film':
         model = SimpleResNetFiLM(
@@ -339,7 +341,9 @@ def main():
             energy_head=args.energy_head,
             num_blocks=4,
             channels=args.channels,
-            long_skip=args.long_skip
+            long_skip=args.long_skip,
+            use_sharp_prior=args.sharp_prior,
+            activation=args.activation
         ).to(device)
     elif args.arch == 'resunet':
         model = ResUNet(
@@ -474,7 +478,9 @@ def main():
             'channels': args.channels,
             'use_film': args.use_film,
             'long_skip': args.long_skip,
-            'interleave_rate': args.interleave_rate
+            'interleave_rate': args.interleave_rate,
+            'sharp_prior': args.sharp_prior,
+            'activation': args.activation
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:

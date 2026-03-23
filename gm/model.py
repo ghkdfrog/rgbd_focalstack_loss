@@ -20,17 +20,18 @@ class ResidualBlock(nn.Module):
     기본적인 2-Conv Residual Block. 
     공간 해상도와 채널 수를 유지합니다 (stride=1).
     """
-    def __init__(self, channels):
+    def __init__(self, channels, activation='relu'):
         super(ResidualBlock, self).__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.act = nn.SiLU() if activation == 'silu' else nn.ReLU()
 
     def forward(self, x):
         residual = x
-        out = F.relu(self.conv1(x))
+        out = self.act(self.conv1(x))
         out = self.conv2(out)
         out += residual
-        return F.relu(out)
+        return self.act(out)
 
 
 
@@ -203,13 +204,22 @@ class SimpleResNet(nn.Module):
     - use_film=True 이면 FiLMResidualBlock 사용 (CoC/diopter 기반 FiLM conditioning)
     - long_skip=True 이면 블록 간 1-layer interval element-wise add skip connection 적용
       (DeepFocus 스타일: block[i] input = block[i-1] output + block[i-2] output)
+    - use_sharp_prior: CoC 기반 Sharpness Prior (초점 영역 선명화)
+    - activation: 'relu' 또는 'silu'
     """
-    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc', num_blocks=4, channels=256, use_film=False, long_skip=False):
+    def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc',
+                 num_blocks=4, channels=256, use_film=False, long_skip=False,
+                 use_sharp_prior=False, activation='relu'):
         super(SimpleResNet, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
         self.use_film = use_film
         self.long_skip = long_skip
+        self.use_sharp_prior = use_sharp_prior
+        self.activation = activation
+
+        act_fn = nn.SiLU() if activation == 'silu' else nn.ReLU()
+        self.act = act_fn
 
         if diopter_mode in ['spatial', 'coc', 'coc_signed', 'coc_abs']:
             in_ch = input_channels + 1
@@ -223,12 +233,13 @@ class SimpleResNet(nn.Module):
         # Residual Blocks (long_skip 시 개별 블록 접근 필요 → 항상 ModuleList)
         if use_film or long_skip:
             self.res_blocks = nn.ModuleList(
-                [FiLMResidualBlock(channels) if use_film else ResidualBlock(channels)
+                [FiLMResidualBlock(channels, activation=activation) if use_film
+                 else ResidualBlock(channels, activation=activation)
                  for _ in range(num_blocks)]
             )
         else:
             self.res_blocks = nn.Sequential(
-                *[ResidualBlock(channels) for _ in range(num_blocks)]
+                *[ResidualBlock(channels, activation=activation) for _ in range(num_blocks)]
             )
 
         # Energy output head
@@ -236,6 +247,11 @@ class SimpleResNet(nn.Module):
             self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
         else:  # 'fc'
             self.fc = nn.Linear(channels * 512 * 512, 1)
+
+        # Sharp Prior: 초점 영역에서 원본 RGB로 당기는 해석적 이차항
+        if use_sharp_prior:
+            self.sharp_lambda = nn.Parameter(torch.tensor(10.0))
+            self.sharp_gamma = nn.Parameter(torch.tensor(30.0))
 
     def _get_cond_map(self, x, diopter, N, H, W):
         """FiLM conditioning용 condition map 추출"""
@@ -247,6 +263,14 @@ class SimpleResNet(nn.Module):
     def forward(self, x, diopter):
         N, C, H, W = x.shape
 
+        # ── 원본 RGB & 생성 중 이미지 참조 (sharp prior용) ──
+        rgb_in = x[:, :3, :, :]   # 원본 RGB (3ch)
+        y_pred = x[:, 4:7, :, :]  # 생성 중인 predicted image (3ch)
+
+        # Sharp Prior용 CoC 맵 미리 저장 (spatial concat 전에)
+        if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            coc_for_prior = x[:, 7:8, :, :]  # (N, 1, H, W)
+
         if self.diopter_mode == 'spatial':
             diopter_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             x = torch.cat([x, diopter_map], dim=1)
@@ -256,16 +280,14 @@ class SimpleResNet(nn.Module):
         # FiLM: condition map 추출
         cond_map = self._get_cond_map(x, diopter, N, H, W) if self.use_film else None
 
-        x = F.relu(self.conv_in(x))
-        x = F.relu(self.conv_expand(x))
+        x = self.act(self.conv_in(x))
+        x = self.act(self.conv_expand(x))
 
         if self.long_skip:
-            # DeepFocus 스타일: 1-layer interval element-wise add
-            # block i 의 입력 = block[i-1] 출력 + block[i-2] 출력 (i >= 2)
-            outputs = []  # 각 블록 출력 기록
+            outputs = []
             for i, block in enumerate(self.res_blocks):
                 if i >= 2:
-                    x = x + outputs[i - 2]  # 2단계 전 블록 출력을 add
+                    x = x + outputs[i - 2]
                 x = block(x, cond_map) if self.use_film else block(x)
                 outputs.append(x)
         elif self.use_film:
@@ -276,11 +298,21 @@ class SimpleResNet(nn.Module):
 
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)
-            x = torch.sum(x, dim=(2, 3))
+            eng = torch.sum(x, dim=(2, 3))   # (N, 1)
         else:  # 'fc'
             x = torch.flatten(x, 1)
-            x = self.fc(x)
-        return x
+            eng = self.fc(x)                  # (N, 1)
+
+        # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
+        if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            coc_abs = torch.abs(coc_for_prior)  # (N, 1, H, W)
+            w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
+            sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
+                w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
+            )
+            eng = eng - sharp_penalty.unsqueeze(-1)
+
+        return eng
 
 
 class SimpleResNetFiLM(nn.Module):
@@ -291,13 +323,21 @@ class SimpleResNetFiLM(nn.Module):
     - CoC 모드: 입력 7ch (RGBD 4ch + predicted 3ch), CoC는 FiLM만
     - Spatial 모드: diopter를 FiLM condition으로 사용 (입력 7ch 유지)
     - 나머지 구조는 SimpleResNet과 동일 (long_skip 지원)
+    - use_sharp_prior: CoC 기반 Sharpness Prior (초점 영역 선명화)
+    - activation: 'relu' 또는 'silu'
     """
     def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
-                 num_blocks=4, channels=256, long_skip=False):
+                 num_blocks=4, channels=256, long_skip=False,
+                 use_sharp_prior=False, activation='relu'):
         super(SimpleResNetFiLM, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
         self.long_skip = long_skip
+        self.use_sharp_prior = use_sharp_prior
+        self.activation = activation
+
+        act_fn = nn.SiLU() if activation == 'silu' else nn.ReLU()
+        self.act = act_fn
 
         # 항상 7ch 입력 (CoC는 FiLM에만 사용, concat X)
         in_ch = input_channels
@@ -308,7 +348,7 @@ class SimpleResNetFiLM(nn.Module):
 
         # FiLM Residual Blocks (항상 FiLM 사용)
         self.res_blocks = nn.ModuleList(
-            [FiLMResidualBlock(channels) for _ in range(num_blocks)]
+            [FiLMResidualBlock(channels, activation=activation) for _ in range(num_blocks)]
         )
 
         # Energy output head
@@ -317,8 +357,17 @@ class SimpleResNetFiLM(nn.Module):
         else:  # 'fc'
             self.fc = nn.Linear(channels * 512 * 512, 1)
 
+        # Sharp Prior: 초점 영역에서 원본 RGB로 당기는 해석적 이차항
+        if use_sharp_prior:
+            self.sharp_lambda = nn.Parameter(torch.tensor(10.0))
+            self.sharp_gamma = nn.Parameter(torch.tensor(30.0))
+
     def forward(self, x, diopter):
         N, C, H, W = x.shape
+
+        # ── 원본 RGB & 생성 중 이미지 참조 (sharp prior용) ──
+        rgb_in = x[:, :3, :, :]   # 원본 RGB (3ch)
+        y_pred = x[:, 4:7, :, :]  # 생성 중인 predicted image (3ch)
 
         # ── Condition map 추출 & 입력 분리 ──
         if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
@@ -330,8 +379,8 @@ class SimpleResNetFiLM(nn.Module):
             cond_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
             # spatial 모드: 입력 그대로 7ch
 
-        x = F.relu(self.conv_in(x))
-        x = F.relu(self.conv_expand(x))
+        x = self.act(self.conv_in(x))
+        x = self.act(self.conv_expand(x))
 
         if self.long_skip:
             # DeepFocus 스타일: 1-layer interval element-wise add
@@ -347,11 +396,23 @@ class SimpleResNetFiLM(nn.Module):
 
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)
-            x = torch.sum(x, dim=(2, 3))
+            eng = torch.sum(x, dim=(2, 3))   # (N, 1)
         else:  # 'fc'
             x = torch.flatten(x, 1)
-            x = self.fc(x)
-        return x
+            eng = self.fc(x)                  # (N, 1)
+
+        # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
+        if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            coc_abs = torch.abs(cond_map)  # (N, 1, H, W)
+            # w(coc): CoC≈0 → 1 (초점 영역), CoC↑ → 0 (블러 영역)
+            w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
+            # 이차 페널티: 초점 영역에서 y → rgb 방향으로 당기는 에너지
+            sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
+                w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
+            )  # (N,)
+            eng = eng - sharp_penalty.unsqueeze(-1)  # (N, 1)
+
+        return eng
 
 
 class ConvNeXtBlock(nn.Module):
@@ -675,19 +736,20 @@ class SpatialFiLM(nn.Module):
 
 
 class FiLMResidualBlock(nn.Module):
-    def __init__(self, channels):
+    def __init__(self, channels, activation='relu'):
         super(FiLMResidualBlock, self).__init__()
         self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.film = SpatialFiLM(condition_channels=1, feature_channels=channels)
+        self.act = nn.SiLU() if activation == 'silu' else nn.ReLU()
 
     def forward(self, x, condition_map):
         residual = x
-        out = F.relu(self.conv1(x))
+        out = self.act(self.conv1(x))
         out = self.conv2(out)
         out = self.film(out, condition_map)
         out += residual
-        return F.relu(out)
+        return self.act(out)
 
 
 class InterleaveResNet(nn.Module):

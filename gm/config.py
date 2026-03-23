@@ -36,6 +36,11 @@ def get_parser():
                         help='Enable long skip connection from conv_expand to energy head (resnet only)')
     parser.add_argument('--interleave_rate', type=int, default=2,
                         help='Pixel shuffle interleave rate for interleave_resnet (default: 2)')
+    parser.add_argument('--sharp_prior', action='store_true',
+                        help='Enable Sharpness Prior for in-focus regions (resnet_film only)')
+    parser.add_argument('--activation', type=str, default='relu',
+                        choices=['relu', 'silu'],
+                        help='Activation function: relu (default) or silu')
 
     # Training
     parser.add_argument('--epochs', type=int, default=50)
