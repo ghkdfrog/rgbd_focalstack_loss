@@ -69,6 +69,7 @@
 | `0319_151904` | **coc_abs**, **convnext_unet** 128ch, **conv1x1**, **linear**, 100ep | **학습중** | **26.24 dB** (25.6/27.1/26.0) | 중간 체크포인트 추론. conv1x1+coc_abs 조합의 한계점 확인 |
 | `0320_063400` | coc, **resunet** 64ch, fc, **linear**, 100ep | **학습중** | **27.72 dB** (26.3/29.2/27.7) | 중간 체크포인트 추론. ResUNet 64ch + fc. conv1x1 대비 성능 확연히 우수 (+4dB) |
 | `0320_055937` | coc, **resunet** 64ch, **conv1x1**, **linear**, 100ep | **학습중** | **23.71 dB** (23.4/24.1/23.7) | 중간 체크포인트 추론. ResUNet 64ch + conv1x1 |
+| `0321_125237` | **coc_abs**, **interleave_resnet**(FiLM) 256ch, fc, **linear**, 100ep | **best_psnr** | **24.76 dB** (23.6/24.5/26.1) | InterleaveResNet 256ch + FiLM. `coc_abs` 조건부. |
 
 ### 🌐 Multi-Scene Runs (전체 데이터셋)
 
@@ -111,6 +112,7 @@
 - `0306_221916`, `0306_222752`, `0307_094134`, `0307_094147`, `0307_172330`, `0308_164208`, `0308_212402`, `0309_084328`, `0309_175428` (`coc`, constant)
 - `0307_172316`, `0308_164220` (`spatial`, constant)
 - `0312_120655`, `0312_120804` (`coc`, base linear 설정 시도, `120940` 등으로 재시작됨)
+- `0321_130849` (`coc_abs`, interleave_resnet(FiLM) 512ch, linear)
 
 ---
 
