@@ -283,6 +283,77 @@ class SimpleResNet(nn.Module):
         return x
 
 
+class SimpleResNetFiLM(nn.Module):
+    """
+    SimpleResNet + FiLM-only CoC conditioning.
+
+    CoC 맵을 입력 채널에 합치지 않고, FiLM conditioning에만 사용.
+    - CoC 모드: 입력 7ch (RGBD 4ch + predicted 3ch), CoC는 FiLM만
+    - Spatial 모드: diopter를 FiLM condition으로 사용 (입력 7ch 유지)
+    - 나머지 구조는 SimpleResNet과 동일 (long_skip 지원)
+    """
+    def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
+                 num_blocks=4, channels=256, long_skip=False):
+        super(SimpleResNetFiLM, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+        self.long_skip = long_skip
+
+        # 항상 7ch 입력 (CoC는 FiLM에만 사용, concat X)
+        in_ch = input_channels
+
+        # 초기 특징 추출 (해상도 유지)
+        self.conv_in = nn.Conv2d(in_ch, 64, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, channels, kernel_size=3, stride=1, padding=1)
+
+        # FiLM Residual Blocks (항상 FiLM 사용)
+        self.res_blocks = nn.ModuleList(
+            [FiLMResidualBlock(channels) for _ in range(num_blocks)]
+        )
+
+        # Energy output head
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc'
+            self.fc = nn.Linear(channels * 512 * 512, 1)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        # ── Condition map 추출 & 입력 분리 ──
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            # CoC는 8번째 채널 (index 7) — FiLM에만 사용
+            cond_map = x[:, 7:8, :, :]
+            # 모델 입력: CoC 제외한 7ch (RGBD 4ch + predicted 3ch)
+            x = x[:, :7, :, :]
+        else:  # spatial
+            cond_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            # spatial 모드: 입력 그대로 7ch
+
+        x = F.relu(self.conv_in(x))
+        x = F.relu(self.conv_expand(x))
+
+        if self.long_skip:
+            # DeepFocus 스타일: 1-layer interval element-wise add
+            outputs = []
+            for i, block in enumerate(self.res_blocks):
+                if i >= 2:
+                    x = x + outputs[i - 2]
+                x = block(x, cond_map)
+                outputs.append(x)
+        else:
+            for block in self.res_blocks:
+                x = block(x, cond_map)
+
+        if self.energy_head == 'conv1x1':
+            x = self.conv_energy(x)
+            x = torch.sum(x, dim=(2, 3))
+        else:  # 'fc'
+            x = torch.flatten(x, 1)
+            x = self.fc(x)
+        return x
+
+
 class ConvNeXtBlock(nn.Module):
     """
     ConvNeXt Block (A ConvNet for the 2020s, CVPR 2022).

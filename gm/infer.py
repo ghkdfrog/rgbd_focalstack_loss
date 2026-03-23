@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import (SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, ResUNet,
+from gm.model import (SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, ResUNet,
                       SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet)
 from gm.config import parse_args
 from gm.train import get_eta, langevin_step
@@ -57,6 +57,8 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
         model = SimpleCNNStride(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'resnet':
         model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip).to(device)
+    elif arch == 'resnet_film':
+        model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip).to(device)
     elif arch == 'resunet':
         model = ResUNet(diopter_mode=diopter_mode, energy_head=energy_head, base_channels=channels, num_bottleneck_blocks=3, use_film=use_film).to(device)
     elif arch == 'convnext':
