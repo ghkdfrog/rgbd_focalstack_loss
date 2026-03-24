@@ -86,8 +86,8 @@ def visualize_infocus(pred, gt, mask, plane_idx, diopter_val, metrics, save_path
     gt_np = gt.permute(1, 2, 0).numpy()
     mask_np = mask.numpy()
 
-    # 마스크 외 영역을 어둡게 (0.2 배)
-    dim_factor = 0.2
+    # 마스크 외 영역을 완전히 어둡게 (0.0 배)
+    dim_factor = 0.0
     mask_3d = np.stack([mask_np] * 3, axis=-1)
 
     gt_masked = np.where(mask_3d, gt_np, gt_np * dim_factor)
