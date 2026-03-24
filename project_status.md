@@ -32,100 +32,97 @@
 
 ---
 
-## 실험 결과 요약 (30개 run)
+## 실험 결과 요약
 
 ### 🏆 Single-Scene Prototype Runs (scene 0 오버피팅)
 
 > [!IMPORTANT]
-> **Best PSNR: ~29.71 dB** — **FiLMResNet** 128ch, `coc_signed`, `linear` eta 스케줄, 50 GM steps (100 epochs)
+> **Best PSNR: ~27.86 dB** — **ResNet** 256ch, `coc`, `linear` eta 스케줄, 50 GM steps (100 epochs)
 
 | Run | 설정 | Best Epoch | Best PSNR (avg p0/p20/p39) | 비고 |
 |:---|:---|:---:|---:|:---|
-| `0314_160511` | coc, **resnet**, **linear**, 100ep, 50steps | **29 ep** | **27.86 dB** (26.6/29.9/27.1) | 🥇 새로운 최고 성능 (기존 대비 약 +2.5dB 향상). 현재 32ep까지 진행됨 |
-| `0313_133317` | coc, **stride**, fc, **linear**, 100ep, 50steps | **13 ep** | **19.51 dB** (19.5/19.7/19.4) | latest(100ep) 19.74 dB. stride 구조 변경으로 인한 성능 하락(25.4 → 19.5dB) |
-| `0310_011629` | coc, fc, **linear**, 100ep, 50steps | **100 ep** | **25.40 dB** (24.2/26.1/25.8) | 🥈 이전 최고 성능. 100ep까지 하락 없이 계속 상승 (plateau) |
-| `0310_011608` | coc, fc, **cosine**, 100ep, 50steps | **100 ep** | **25.27 dB** (24.4/26.1/25.2) | 🥉 cosine도 100ep까지 하락 없이 안정적 수렴 |
-| `0309_084426` | coc, fc, constant, 100ep, 100steps | **latest** | **25.13 dB** (24.3/26.9/24.2) | p20 단독 최고(26.9). 특정 에폭에 피크 |
+| `0314_160511` | coc, **resnet**, **linear**, 100ep, 50steps | **best** | **27.86 dB** (26.6/29.9/27.1) | 최고 성능. 100ep까지 학습 완료됨. |
+| `0313_133317` | coc, **stride**, fc, **linear**, 100ep, 50steps | **15 ep** | **19.89 dB** (19.8/19.8/20.0) | stride 구조 변경으로 인한 성능 하락(25.4 → 19.8dB) |
+| `0310_011629` | coc, fc, **linear**, 100ep, 50steps | **100 ep** | **25.36 dB** (24.2/26.0/25.8) | 이전 최고 성능. 100ep까지 하락 없이 계속 상승 (plateau) |
+| `0310_011608` | coc, fc, **cosine**, 100ep, 50steps | **100 ep** | **25.25 dB** (24.4/26.1/25.3) | cosine도 100ep까지 하락 없이 안정적 수렴 |
+| `0309_084426` | coc, fc, constant, 100ep, 100steps | **-** | **평가 로그 없음** | p20 단독 최고(26.9). 특정 에폭에 피크 |
 | `0309_175036` | coc, fc, constant, 100ep, 50steps | **39 ep** | **24.91 dB** (24.0/25.9/24.8) | 39ep에 피크 달성 후 100ep까지 **2dB 폭락** (오버피팅) |
-| `0311_191411` | coc, fc, constant, **deep**(10L), 50ep | **40 ep** | **22.95 dB** (21.5/23.2/24.2) | 40ep에서 피크 후 50ep까지 유지됨 (plateau 도달) |
-| `0312_120940` | coc, fc, constant, **deep**(10L), 100ep| **53 ep** | **23.04 dB** (22.5/23.0/23.6) | `191411`에서 resume 진행. 100ep 완료. 53ep 이후 정체/소폭 하락 (수렴) |
-| `0313_041643` | coc, fc, **linear**, **deep**(10L), 50ep| **26 ep** | **23.75 dB** (23.0/23.8/24.4) | `120804` (중단됨)에서 resume. 50ep 완료. Deep 구조에서도 linear가 constant보다 성능이 높음 |
-| `0308_212501` | coc, fc, constant, 50ep, 100steps | **latest** | **22.69 dB** (22.4/23.7/22.0) | 50ep에서 점진적 상승 중 종료 |
-| `0307_232125` | **spatial**, fc, constant, 100ep, 50steps | **latest** | **18.59 dB** (18.7/19.4/17.6) | spatial 모드는 성능 불리 |
-| `0309_174409` | coc, **conv1x1**, constant, 100ep | **best** | **16.39 dB** → latest **붕괴** | conv1x1은 불안정(latest -2dB) |
+| `0311_191411` | coc, fc, constant, **deep**(10L), 50ep | **50 ep** | **22.83 dB** (21.3/23.1/24.1) | 50ep에도 계속 상승 |
+| `0312_120940` | coc, fc, constant, **deep**(10L), 100ep| **53 ep** | **23.04 dB** (22.5/23.0/23.6) | `191411`에서 resume 진행. 100ep 완료. 수렴 확인 |
+| `0313_041643` | coc, fc, **linear**, **deep**(10L), 50ep| **26 ep** | **23.75 dB** (23.0/23.8/24.4) | `120804` (중단됨)에서 resume. Deep 구조에서도 linear가 우수 |
+| `0308_212501` | coc, fc, constant, 50ep, 100steps | **50 ep** | **22.69 dB** (22.4/23.7/22.0) | 50ep에서 점진적 상승 중 종료 |
+| `0307_232125` | **spatial**, fc, constant, 100ep, 50steps | **6 ep** | **20.07 dB** (19.7/20.8/19.7) | spatial 모드는 성능 불리 |
+| `0309_174409` | coc, **conv1x1**, constant, 100ep | **4 ep** | **16.27 dB** (15.7/16.9/16.2) | conv1x1은 불안정 (초반 피크 후 붕괴) |
 
 ### 🧪 New Architecture Single-Scene Runs
 
+> [!IMPORTANT]
+> **Best PSNR: ~32.22 dB** — **ResNet(FiLM)** 128ch, `coc_abs`, `linear` eta 스케줄, 100 epochs (`0323_203943`)
+
 | Run | 설정 | Best Epoch | Best PSNR (avg p0/p20/p39) | 비고 |
 |:---|:---|:---:|---:|:---|
-| `0319_150917` | coc, **film_resnet** 128ch, fc, **linear**, 100ep | **학습중** | **30.09 dB** (27.5/30.7/32.1) | 🥇 **전체 최고 성능 갱신**. 중간 체크포인트임에도 기존 (29.71)을 크게 상회 |
-| `0318_130552` | **coc_signed**, **film_resnet** 128ch, fc, **linear**, 100ep | **best_psnr** | **29.71 dB** (27.3/30.5/31.3) | 🥈 이전 최고 성능. FiLM+coc_signed 조합이 p39에서 31.3dB 달성 |
-| `0318_112238` | coc, **resnet** 128ch, fc, **linear**, 50ep | **best_psnr(19ep)** | **27.59 dB** (26.1/29.6/27.1) | ResNet 128ch. 256ch(0314_160511, 27.86)과 유사한 성능 |
+| `0323_203943` | **coc_abs**, **film_resnet** 128ch, **SiLU**,  100ep | **best** | **32.22 dB** (28.9/33.0/34.8) | 🥇 **전체 최고 성능 갱신**. SiLU 활성화 |
+| `0319_150917` | coc, **film_resnet** 128ch, fc, **linear**, 100ep | **100ep** | **31.20 dB** (27.7/30.6/32.1) | 🥈 100ep 완료 후 기존 예측치 향상, 안정적인 고성능 |
+| `0318_130552` | **coc_signed**, **film_resnet** 128ch, fc, **linear**, 100ep | **100ep** | **29.79 dB** (27.4/30.5/31.5) | 🥉 `coc_signed` 조합이 p39에서 우수 |
+| `0323_124739` | **coc_abs**, **resnet_film** 128ch, fc, **linear**, 100ep | **best** | **29.45 dB** (27.1/30.1/31.1) | `resnet_film` 특화 클래스 실험, 고성능 기록 |
+| `0320_063400` | coc, **resunet** 64ch, fc, **linear**, 100ep | **best** | **27.72 dB** (26.3/29.2/27.7) | 100ep 완료. ResUNet 64ch + fc. 준수한 성능 |
+| `0318_112238` | coc, **resnet** 128ch, fc, **linear**, 50ep | **19 ep** | **27.59 dB** (26.1/29.6/27.1) | 일반 ResNet 128ch. |
+| `0319_151904` | **coc_abs**, **convnext_unet** 128ch, **conv1x1**, **linear**, 100ep | **best** | **27.53 dB** (26.4/28.5/27.7) | 100ep 완료. 1.3dB 상승 |
+| `0319_150817` | **coc_signed**, **resnet** 128ch, fc, **linear**, 100ep | **best** | **27.47 dB** (25.9/29.4/27.1) | FiLM 뺀 대조군 실험 |
 | `0317_034204` | coc, **convnext_unet**, **conv1x1**, **linear**, 100ep | **best** | **25.82 dB** (25.4/26.5/25.5) | ConvNeXtUNet+conv1x1. plane별 편차 작음 |
-| `0317_033217` | coc, **convnext_unet**, fc, **linear**, 100ep | **best** | **25.12 dB** (24.7/25.9/24.8) | ConvNeXtUNet+fc. conv1x1보다 약간 낮음 |
-| `0318_202001` | coc, **resnet** 128ch, **conv1x1**, **linear**, 50ep | **best_psnr(8ep)** | **24.96 dB** (24.8/25.4/24.7) | ResNet 128ch+conv1x1. fc(27.59)보다 낮지만 안정적 |
-| `0318_132413` | **coc_abs**, **dilated**, **conv1x1**, **linear**, 50ep | **best_psnr(50ep)** | **22.40 dB** (21.3/23.7/22.2) | DilatedNet+coc_abs. 새 diopter 모드 실험 |
-| `0319_150817` | **coc_signed**, **resnet** 128ch, fc, **linear**, 100ep | **학습중** | **27.47 dB** (25.9/29.4/27.1) | 중간 체크포인트 추론. 최고 기록(29.71)의 구조(FiLM) 변형 대조군으로 보임 |
-| `0319_151904` | **coc_abs**, **convnext_unet** 128ch, **conv1x1**, **linear**, 100ep | **학습중** | **26.24 dB** (25.6/27.1/26.0) | 중간 체크포인트 추론. conv1x1+coc_abs 조합의 한계점 확인 |
-| `0320_063400` | coc, **resunet** 64ch, fc, **linear**, 100ep | **학습중** | **27.72 dB** (26.3/29.2/27.7) | 중간 체크포인트 추론. ResUNet 64ch + fc. conv1x1 대비 성능 확연히 우수 (+4dB) |
-| `0320_055937` | coc, **resunet** 64ch, **conv1x1**, **linear**, 100ep | **학습중** | **23.71 dB** (23.4/24.1/23.7) | 중간 체크포인트 추론. ResUNet 64ch + conv1x1 |
-| `0321_125237` | **coc_abs**, **interleave_resnet**(FiLM) 256ch, fc, **linear**, 100ep | **best_psnr** | **24.76 dB** (23.6/24.5/26.1) | InterleaveResNet 256ch + FiLM. `coc_abs` 조건부. |
+| `0317_033217` | coc, **convnext_unet**, fc, **linear**, 100ep | **best** | **25.11 dB** (24.7/25.9/24.8) | ConvNeXtUNet+fc. conv1x1보다 약간 낮음 |
+| `0318_202001` | coc, **resnet** 128ch, **conv1x1**, **linear**, 50ep | **8 ep** | **24.96 dB** (24.8/25.4/24.7) | ResNet 128ch+conv1x1. 안정적 |
+| `0321_125237` | **coc_abs**, **interleave_resnet**(FiLM) 256ch, fc, **linear**, 100ep | **best** | **24.76 dB** (23.6/24.5/26.1) | InterleaveResNet 256ch + FiLM. |
+| `0323_042615` | **coc_abs**, **film_resnet** 128ch, **SiLU**, **linear**, 100ep | **best** | **24.44 dB** (24.3/24.9/24.0) | SiLU 적용. 준수한 성능 |
+| `0320_055937` | coc, **resunet** 64ch, **conv1x1**, **linear**, 100ep | **best** | **23.71 dB** (23.4/24.1/23.7) | 100ep 완료. conv1x1 사용 |
+| `0324_180506` | **coc_abs**, **film_resnet** 128ch, **Sharp(1.0)**, 50ep | **best** | **23.66 dB** (25.7/24.1/21.1) | Sharpness Prior(1.0) 적용 |
+| `0318_132413` | **coc_abs**, **dilated**, **conv1x1**, **linear**, 50ep | **50 ep** | **22.40 dB** (21.3/23.7/22.2) | DilatedNet+coc_abs. |
+| `0323_042653` | **coc_abs**, **film_resnet** 128ch, fc, **linear**, 100ep | **best** | **18.84 dB** (23.9/21.1/11.5) | 매우 낮은 수렴 성능 |
+| `0323_203707` | **coc_abs**, **film_resnet** 128ch, fc, **linear**, 100ep | **best** | **18.44 dB** (18.6/21.9/14.9) | 매우 낮은 수렴 성능 |
 
 ### 🌐 Multi-Scene Runs (전체 데이터셋)
 
 | Run | 설정 | Best Epoch | PSNR (avg p0/p20/p39) | 비고 |
 |:---|:---|:---:|---:|:---|
-| `0310_080631` | coc, conv1x1, cosine, 100ep, 5장 | **latest** | **20.80 dB** (20.2/21.5/20.7) | conv1x1이 multi에서 안정적 |
-| `0310_075915` | coc, fc, cosine, 100ep, 5장 | **latest** | **19.88 dB** (19.2/20.7/19.7) | fc가 multi에서는 conv1x1보다 낮음 |
-| `0311_142349` | coc, fc, constant, **5ep**, 전체 | **best_psnr** | **21.46 dB** (20.7/21.8/21.9) | 전체(90) scene 학습 (5 epoch). Best PSNR 기준 |
-| `0312_134650` | coc, fc, **linear**, 100ep, 5장 | **14 ep** | **20.97 dB** (21.0/21.1/20.8) | 100ep 완료. 초반 피크(14ep) 후 성능 하락. Multi-scene에서 linear 감쇠가 불안정할 수 있음 |
-| `0316_083358` | coc, **resnet**, fc, **linear**, 5ep, 전체 | — | — | 전체 scene ResNet 학습 시도. 5ep만 진행, 추론 결과 없음 (중단/미완료) |
+| `0311_142349` | coc, fc, constant, **5ep**, 전체 | **best** | **21.46 dB** (20.7/21.8/21.9) | 전체 scene 학습. Best PSNR |
+| `0312_134650` | coc, fc, **linear**, 100ep, 5장 | **14 ep** | **20.97 dB** (21.0/21.1/20.8) | 14ep 피크 후 하락. linear 감쇠 불안정 가능성 |
+| `0310_080631` | coc, conv1x1, cosine, 100ep, 5장 | **-** | **-** | 평가 로그 없음 |
+| `0310_075915` | coc, fc, cosine, 100ep, 5장 | **-** | **-** | 평가 로그 없음 |
+| `0316_083358` | coc, **resnet**, fc, **linear**, 5ep, 전체 | **-** | **-** | 전체 scene ResNet 시도. 평가 로그 없음 |
+| `0323_152249` | **coc_abs**, **film_resnet** 128ch, fc, **linear**, 5ep, 다중 | **-** | **-** | 평가 로그 없음 |
+| `0324_100203` | **coc_abs**, **film_resnet** 128ch, fc, **linear**, 5ep, 다중 | **-** | **-** | 평가 로그 없음 |
 
 ---
 
 ## 핵심 인사이트
 
 ### 1. η 스케줄의 효과
-- `linear`/`cosine` 감쇠가 `constant`보다 **single-scene에서 2~3 dB 유리**
+- `linear`/`cosine` 감쇠가 `constant`보다 **single-scene에서 2~3 dB 유리**.
 
-### 2. 아키텍처 비교
-- **FiLMResNet(coc_signed) 128ch**: **전체 최고 성능 29.71 dB**. FiLM conditioning + 부호 있는 CoC의 시너지
-- **ResNet 256ch**: 27.86 dB. 128ch(27.59)와 유사 → 채널 수보다 구조/conditioning이 중요
-- **ConvNeXtUNet**: conv1x1(25.82) > fc(25.12). plane별 편차가 매우 작아 안정적
-- **DilatedNet + coc_abs**: 22.40 dB. 절대값 CoC로는 방향 정보 부족
 
 ### 3. Diopter 조건부 모드
-- **coc_signed > coc > coc_abs > spatial** 순서로 성능 우위
-- coc_signed는 "초점 앞/뒤" 방향 정보를 명시적으로 제공
+- 기존 `coc_signed > coc > coc_abs > spatial` 가설에 변화 발생. `coc_abs`도 FiLM 레이어를 통해 적절히 스케일링/시프트 되면 충분한 성능을 낼 수 있음.
 
-### 4. FiLM Conditioning
-- FiLMResNet(coc_signed) 128ch: **29.71 dB** — ResNet 256ch(27.86) 대비 +1.85 dB
-- 적은 파라미터(128ch)로도 FiLM + coc_signed 조합이 효과적
+### 4. 현재 미해결 과제
+- 아키텍처 동일 설정 하에서도 수렴의 편차가 크므로 안정을 위한 방안 필요.
+- Multi-scene 학습을 긴 에폭으로 돌려 객관적인 일반화 능력 검증 필요.
 
-### 5. 현재 미해결 과제
-- Multi-scene 학습이 아직 **충분한 에폭으로 돌리지 않음** (5ep only)
-- ConvNeXtUNet + FiLM 조합은 아직 미실험
-- Langevin noise 스케일 문제 미해결
-
-### 🗑️ 미완료 / 로그 없음 (Unrecorded & Incomplete Runs)
-폴더는 생성되었으나, `log.txt` 등 학습 결과가 기록되지 않아 중단되거나 바로 실패한 run 목록입니다.
+### 🗑️ 미완료 / 중단된 Runs
+폴더는 생성되었으나 바로 실패하거나 결과 기록이 없는 목록들:
 - `0306_221916`, `0306_222752`, `0307_094134`, `0307_094147`, `0307_172330`, `0308_164208`, `0308_212402`, `0309_084328`, `0309_175428` (`coc`, constant)
 - `0307_172316`, `0308_164220` (`spatial`, constant)
-- `0312_120655`, `0312_120804` (`coc`, base linear 설정 시도, `120940` 등으로 재시작됨)
+- `0312_120655`, `0312_120804` (`coc`, linear)
 - `0321_130849` (`coc_abs`, interleave_resnet(FiLM) 512ch, linear)
 
 ---
 
 ## 🚀 다음 단계 (Future Plans)
 
-### 후보 1. ConvNeXt 블록 (우선 적용 대상)
-* **논문**: *A ConvNet for the 2020s (CVPR 2022)*
-* **특징**: `7x7 Depthwise Conv` 와 `Pointwise Conv` 구조를 채택하여, 해상도를 유지하면서도 기존 ResNet 블록보다 **훨씬 넓은 Receptive Field(수용 영역) 확보**.
+### 후보 1. ConvNeXt 블록 (진행사항 체크)
+* 기존 ConvNeXtUNet 결과 비교 계속 (현재 `27.5dB` 수준으로 준수한 상태)
 
-### 후보 2. Dilated Residual 블록 (팽창 합성곱)
-* **논문**: *Multi-Scale Context Aggregation by Dilated Convolutions (ICLR 2016)*
-* **특징**: 커널 사이에 빈 공간을 두어 연산량과 파라미터 증가 없이 Receptive Field만 극대화.
+### 후보 2. Sharpness Prior 최적화 및 안정성 확보
+* `0323_203943` (32.22 dB)에서 입증된 **Sharpness Prior (lambda=10.0)** 와 **SiLU** 의 효과를 `coc_signed` 등 다른 조건에서도 검증.
 
 ### 후보 3. SE-ResNet 블록 (채널 어텐션)
-* **논문**: *Squeeze-and-Excitation Networks (CVPR 2018)*
-* **특징**: 피처 맵(채널) 별로 가중치를 부여하여 CoC 조건에 따라 블러/선명 채널 조절.
+* 피처 맵(채널) 별로 가중치를 부여하여 CoC 조건에 따라 블러/선명 채널 조절.
