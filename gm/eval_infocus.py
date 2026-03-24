@@ -30,16 +30,31 @@ from dataset_focal import FocalDataset, DP_FOCAL, NUM_FOCAL_PLANES, calculate_ps
 # In-Focus Mask & Metrics
 # ──────────────────────────────────────────────────────────────
 
-def compute_infocus_mask(coc_map, threshold=0.05):
+def compute_infocus_mask(coc_map, depth_m, diopter_val, mode='depth', threshold=0.1):
     """
-    CoC 맵에서 in-focus 마스크 생성.
-    coc_map: (1, H, W) or (H, W), 값 범위 [0, 1] (0 = 완전 초점)
-    threshold: CoC < threshold인 픽셀을 in-focus로 판정
-    Returns: bool mask (H, W)
+    in-focus 마스크 생성.
+    mode='coc': |CoC| < threshold
+    mode='depth': |Depth(m) - FocalDepth(m)| < threshold
+    mode='diopter': |Depth(Diopter) - FocalDiopter| < threshold
     """
-    if coc_map.dim() == 3:
-        coc_map = coc_map.squeeze(0)
-    return (coc_map.abs() < threshold)
+    if mode == 'coc':
+        if coc_map is None:
+            return torch.ones(depth_m.shape[-2:], dtype=torch.bool)
+        if coc_map.dim() == 3:
+            coc_map = coc_map.squeeze(0)
+        return (coc_map.abs() < threshold)
+    elif mode == 'depth':
+        focal_depth = 1.0 / (diopter_val + 1e-8)
+        if depth_m.dim() == 3:
+            depth_m = depth_m.squeeze(0)
+        return (depth_m - focal_depth).abs() < threshold
+    elif mode == 'diopter':
+        depth_diopter = 1.0 / (depth_m + 1e-8)
+        if depth_diopter.dim() == 3:
+            depth_diopter = depth_diopter.squeeze(0)
+        return (depth_diopter - diopter_val).abs() < threshold
+    else:
+        raise ValueError(f"Unknown mask mode: {mode}")
 
 
 def compute_infocus_metrics(pred, gt, mask):
@@ -189,7 +204,7 @@ def plot_summary(all_results, save_dir, tag):
 
 def run_eval_for_tag(tag, ckpt_path, saved_args, device, ds, gm_steps,
                      gm_step_size, eta_min, eta_schedule, langevin_noise,
-                     output_base_dir, coc_threshold=0.05, vis_planes=[0, 20, 39]):
+                     output_base_dir, mask_mode='depth', mask_threshold=0.1, vis_planes=[0, 20, 39]):
     """하나의 체크포인트 태그에 대해 in-focus 평가 실행"""
 
     diopter_mode = saved_args.get('diopter_mode', 'coc')
@@ -208,7 +223,7 @@ def run_eval_for_tag(tag, ckpt_path, saved_args, device, ds, gm_steps,
 
     print(f"\n{'='*60}")
     print(f"  [{tag}] epoch={ckpt_epoch}  |  In-Focus Evaluation")
-    print(f"  CoC threshold: {coc_threshold}")
+    print(f"  Mask mode: {mask_mode}, threshold: {mask_threshold}")
     print(f"{'='*60}")
 
     # 출력 폴더
@@ -243,15 +258,18 @@ def run_eval_for_tag(tag, ckpt_path, saved_args, device, ds, gm_steps,
             eta_min, eta_schedule, langevin_noise
         )
 
-        # CoC 맵 추출 (x[:, 7:8] — 데이터셋에서 이미 계산됨)
+        # CoC map & Depth map 추출
         if x.shape[1] > 7:
             coc_map = x[0, 7:8, :, :].cpu()  # (1, H, W)
         else:
-            # spatial 모드면 CoC 없음 → 전체 이미지로 평가
-            coc_map = torch.zeros(1, x.shape[2], x.shape[3])
+            coc_map = None
+
+        # dataset_focal에서 depth는 x[:, 3:4]
+        # normalize 되어 들어가므로 원상복구 (meters)
+        depth_m = x[0, 3:4, :, :].cpu() * 12.0
 
         # in-focus 마스크
-        mask = compute_infocus_mask(coc_map, threshold=coc_threshold)
+        mask = compute_infocus_mask(coc_map, depth_m, diopter_val, mode=mask_mode, threshold=mask_threshold)
 
         # 메트릭 계산
         gt_cpu = gt.squeeze()
@@ -278,7 +296,8 @@ def run_eval_for_tag(tag, ckpt_path, saved_args, device, ds, gm_steps,
     json_result = {
         'tag': tag,
         'epoch': ckpt_epoch,
-        'coc_threshold': coc_threshold,
+        'mask_mode': mask_mode,
+        'mask_threshold': mask_threshold,
         'gm_steps': gm_steps,
         'gm_step_size': gm_step_size,
         'eta_schedule': eta_schedule,
@@ -335,8 +354,11 @@ def main():
                         help='Path to run directory (contains args.json, checkpoints)')
     parser.add_argument('--scene_idx', type=int, default=0,
                         help='Scene index (default: 0)')
-    parser.add_argument('--coc_threshold', type=float, default=0.05,
-                        help='CoC threshold for in-focus mask (default: 0.05)')
+    parser.add_argument('--mask_mode', type=str, default='depth',
+                        choices=['coc', 'depth', 'diopter'],
+                        help='Metric determining in-focus region (default: depth)')
+    parser.add_argument('--mask_threshold', type=float, default=0.1,
+                        help='Threshold for mask mode (default: 0.1)')
     parser.add_argument('--vis_planes', type=str, default='0,20,39',
                         help='Planes to visualize (comma-separated, default: 0,20,39)')
     parser.add_argument('--ckpt_tag', type=str, default='all',
@@ -373,7 +395,7 @@ def main():
 
     print(f"\nRun dir:  {args.run_dir}")
     print(f"Scene:    {args.scene_idx}")
-    print(f"CoC thr:  {args.coc_threshold}")
+    print(f"Mask:     {args.mask_mode} < {args.mask_threshold}")
     print(f"GM steps: {gm_steps}, step_size: {gm_step_size}")
     print(f"Vis planes: {vis_planes}")
 
@@ -419,7 +441,8 @@ def main():
             eta_schedule=eta_schedule,
             langevin_noise=langevin_noise,
             output_base_dir=args.run_dir,
-            coc_threshold=args.coc_threshold,
+            mask_mode=args.mask_mode,
+            mask_threshold=args.mask_threshold,
             vis_planes=vis_planes
         )
 
