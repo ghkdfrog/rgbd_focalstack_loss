@@ -26,7 +26,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, save_model_architecture
-from gm.config import parse_args
+from gm.config import parse_args, get_parser
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 try:
@@ -264,18 +264,67 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    # ── Output directory ──
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    scene_str = "scene0_" if args.single_scene_only else ""
-    head_str = f"_{args.energy_head}" if args.energy_head != 'fc' else ""
-    eta_str = f"_{args.eta_schedule}" if args.eta_schedule != 'constant' else ""
-    run_name = f"gm_{scene_str}{args.diopter_mode}{head_str}{eta_str}_{timestamp}"
-    output_dir = os.path.join(args.output_dir, run_name)
-    os.makedirs(output_dir, exist_ok=True)
+    # ── Auto-resume from run directory ──
+    if args.resume_dir:
+        resume_args_path = os.path.join(args.resume_dir, 'args.json')
+        resume_ckpt_path = os.path.join(args.resume_dir, 'latest.pth')
 
-    # ── Save args.json ──
+        if not os.path.exists(resume_args_path):
+            print(f"ERROR: args.json not found in {args.resume_dir}")
+            return
+        if not os.path.exists(resume_ckpt_path):
+            print(f"ERROR: latest.pth not found in {args.resume_dir}")
+            return
+
+        # 저장된 설정 로드
+        with open(resume_args_path) as f:
+            saved_args = json.load(f)
+
+        # CLI 기본값과 다른 인수만 override로 간주
+        parser = get_parser()
+        defaults = vars(parser.parse_args([]))
+
+        # saved_args에서 복원할 키 목록 (학습 설정 전체)
+        restore_keys = [
+            'arch', 'diopter_mode', 'energy_head', 'channels',
+            'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda', 'sharp_gamma',
+            'activation', 'interleave_rate',
+            'epochs', 'batch_size', 'lr', 'weight_decay',
+            'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise',
+            'single_scene_only', 'num_scenes', 'unmatch_ratio', 'save_every',
+            'data_dir', 'generated_data_dir', 'output_dir'
+        ]
+
+        for key in restore_keys:
+            if key in saved_args:
+                cli_val = getattr(args, key, defaults.get(key))
+                default_val = defaults.get(key)
+                # CLI에서 명시적으로 지정하지 않은 경우에만 복원
+                if cli_val == default_val:
+                    setattr(args, key, saved_args[key])
+
+        # resume 체크포인트 자동 설정
+        args.resume = resume_ckpt_path
+        output_dir = args.resume_dir
+
+        print(f"\n{'='*50}")
+        print(f"  AUTO-RESUME from: {args.resume_dir}")
+        print(f"  Checkpoint: latest.pth")
+        print(f"  Config restored from args.json")
+        print(f"{'='*50}\n")
+    else:
+        # ── 새 run: Output directory 생성 ──
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        scene_str = "scene0_" if args.single_scene_only else ""
+        head_str = f"_{args.energy_head}" if args.energy_head != 'fc' else ""
+        eta_str = f"_{args.eta_schedule}" if args.eta_schedule != 'constant' else ""
+        run_name = f"gm_{scene_str}{args.diopter_mode}{head_str}{eta_str}_{timestamp}"
+        output_dir = os.path.join(args.output_dir, run_name)
+        os.makedirs(output_dir, exist_ok=True)
+
+    # ── Save args.json (항상 최신 설정 저장) ──
     args_dict = vars(args)
-    args_dict['timestamp'] = timestamp
+    args_dict['timestamp'] = datetime.now().strftime('%Y%m%d_%H%M%S')
     with open(os.path.join(output_dir, 'args.json'), 'w') as f:
         json.dump(args_dict, f, indent=2)
     print(f"Args saved to {output_dir}/args.json")

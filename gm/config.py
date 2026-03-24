@@ -77,6 +77,8 @@ def get_parser():
     # Checkpointing
     parser.add_argument('--resume', type=str, default=None,
                         help='Path to checkpoint to resume from')
+    parser.add_argument('--resume_dir', type=str, default=None,
+                        help='Path to a run directory to auto-resume (loads args.json + latest.pth)')
     parser.add_argument('--save_every', type=int, default=5,
                         help='Save checkpoint every N epochs (0 = disable)')
 
