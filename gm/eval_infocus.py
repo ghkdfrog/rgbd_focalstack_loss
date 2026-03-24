@@ -72,7 +72,7 @@ def compute_infocus_metrics(pred, gt, mask):
 
     num_pixels = pred_pixels.numel()
     if num_pixels == 0:
-        return {'mse': float('nan'), 'psnr': float('nan'), 'num_pixels': 0}
+        return {'mse': float('nan'), 'psnr': float('nan'), 'num_pixels': 0, 'coverage': 0.0}
 
     mse = torch.mean((pred_pixels - gt_pixels) ** 2).item()
     if mse < 1e-10:
