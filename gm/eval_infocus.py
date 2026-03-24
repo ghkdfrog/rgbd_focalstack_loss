@@ -383,12 +383,20 @@ def main():
     if generated_data_dir is None:
         generated_data_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'data')
 
+    single_scene_only = saved_args.get('single_scene_only', False)
+    dataset_split = 'train' if single_scene_only else 'val'
+    
     ds = FocalDataset(
         data_dir, generated_data_dir,
-        split='val', unmatch_ratio=0,
+        split=dataset_split, unmatch_ratio=0,
         diopter_mode=diopter_mode, return_gt=True,
-        single_scene_only=True, num_scenes=0
+        single_scene_only=single_scene_only, num_scenes=0
     )
+
+    if single_scene_only:
+        print(f"Dataset split: train (Prototype mode detected)")
+    else:
+        print(f"Dataset split: val")
 
     # 체크포인트 해석
     ckpt_list = resolve_ckpt_paths(args.run_dir, args.ckpt_tag)
