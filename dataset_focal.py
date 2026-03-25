@@ -270,7 +270,7 @@ class FocalDataset(Dataset):
             )
             film_width = 2.0 * film_len_dist * np.tan(fov / 2.0)
             W = depth.shape[1]
-            coc_np = np.clip(coc_np / film_width * W / cocScale, 0.0, 1.0).astype(np.float32)
+            coc_np = np.clip(coc_np / film_width * W / cocScale, -1.0, 1.0).astype(np.float32)
             coc_t = torch.from_numpy(coc_np).unsqueeze(0).float()   # (1, H, W)
             x = torch.cat([rgb_t, depth_t, pred_t, coc_t], dim=0)  # (8, H, W)
             if self.diopter_mode == 'coc' or self.diopter_mode == 'coc_abs':
