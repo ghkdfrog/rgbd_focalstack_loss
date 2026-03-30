@@ -110,7 +110,8 @@ def resolve_ckpt_paths(run_dir, ckpt_tag):
 
 
 def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
-                       eta_min=0.002, eta_schedule='constant', use_langevin_noise=False):
+                       eta_min=0.002, eta_schedule='constant', use_langevin_noise=False,
+                       noise_method='constant_scale', noise_scale=0.1):
     """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR/energy를 반환"""
     N, C, H, W = x.shape
     step_psnr_history = []
@@ -143,7 +144,7 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
 
             # 마지막 스텝에서는 노이즈 없이 깨끗하게 마무리
             noise = use_langevin_noise and (step < gm_steps - 1)
-            current_image = langevin_step(current_image, grad, eta, noise)
+            current_image = langevin_step(current_image, grad, eta, noise, noise_method, noise_scale)
 
             # step별 PSNR + energy 기록
             with torch.no_grad():
@@ -296,7 +297,9 @@ def plot_energy_per_plane(all_step_data, save_dir):
 
 def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
                           ds, plane_indices, gm_steps, gm_step_size,
-                          eta_min, eta_schedule, langevin_noise, channels=256, use_film=False, long_skip=False, interleave_rate=2):
+                          eta_min, eta_schedule, langevin_noise,
+                          noise_method='constant_scale', noise_scale=0.1,
+                          channels=256, use_film=False, long_skip=False, interleave_rate=2):
     """하나의 체크포인트 태그에 대해 추론 실행"""
     diopter_mode = saved_args.get('diopter_mode', 'coc')
     energy_head = saved_args.get('energy_head', 'fc')
@@ -321,6 +324,8 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
         'eta_schedule': eta_schedule,
         'eta_min': eta_min,
         'langevin_noise': langevin_noise,
+        'noise_method': noise_method,
+        'noise_scale': noise_scale,
         'diopter_mode': diopter_mode,
         'plane_indices': plane_indices
     }
@@ -352,7 +357,7 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
 
         final_image, psnr, history, step_psnr_history = generate_one_plane(
             model, x, diopter, gt, device, gm_steps, gm_step_size,
-            eta_min, eta_schedule, langevin_noise
+            eta_min, eta_schedule, langevin_noise, noise_method, noise_scale
         )
 
         all_step_data[p_idx] = step_psnr_history
@@ -429,10 +434,14 @@ def main():
     train_eta_schedule = saved_args.get('eta_schedule', 'constant')
     train_eta_min = saved_args.get('eta_min', 0.002)
     train_langevin_noise = saved_args.get('langevin_noise', False)
+    train_noise_method = saved_args.get('noise_method', 'constant_scale')
+    train_noise_scale = saved_args.get('noise_scale', 0.1)
 
     eta_schedule = args.eta_schedule if args.eta_schedule != 'constant' else train_eta_schedule
     eta_min = args.eta_min if args.eta_min != 0.002 else train_eta_min
     langevin_noise = args.langevin_noise or train_langevin_noise
+    noise_method = args.noise_method if args.noise_method != 'constant_scale' else train_noise_method
+    noise_scale = args.noise_scale if args.noise_scale != 0.1 else train_noise_scale
 
     single_scene_only = saved_args.get('single_scene_only', False)
 
@@ -449,6 +458,8 @@ def main():
     print(f"  eta_schedule : {eta_schedule}  (train was {train_eta_schedule})")
     print(f"  eta_min      : {eta_min}  (train was {train_eta_min})")
     print(f"  langevin_noise: {langevin_noise}  (train was {train_langevin_noise})")
+    print(f"  noise_method : {noise_method}  (train was {train_noise_method})")
+    print(f"  noise_scale  : {noise_scale}  (train was {train_noise_scale})")
     print(f"  channels     : {channels}  (train was {train_channels})")
     print(f"  prototype    : {single_scene_only} → split='{infer_split}'")
     print(f"  ckpt_tag     : {args.ckpt_tag}")
@@ -485,7 +496,9 @@ def main():
         results, avg_psnr = run_inference_for_tag(
             tag, ckpt_path, args, saved_args, device,
             ds, plane_indices, gm_steps, gm_step_size,
-            eta_min, eta_schedule, langevin_noise, channels=channels, use_film=use_film, long_skip=long_skip, interleave_rate=interleave_rate
+            eta_min, eta_schedule, langevin_noise,
+            noise_method, noise_scale,
+            channels=channels, use_film=use_film, long_skip=long_skip, interleave_rate=interleave_rate
         )
         all_summaries[tag] = {
             'avg_psnr': avg_psnr,
