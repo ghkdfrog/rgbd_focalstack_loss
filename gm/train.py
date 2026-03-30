@@ -4,7 +4,7 @@ Gradient Matching Training Script (SimpleCNN)
 Usage:
     python -m gm.train --epochs 50 --single_scene_only
     python -m gm.train --diopter_mode spatial --gm_steps 30
-    python -m gm.train --energy_head conv1x1 --eta_schedule cosine --langevin_noise
+    python -m gm.train --energy_head conv1x1 --eta_schedule cosine --langevin_noise --noise_method constant_scale --noise_scale 0.1
 """
 
 import os
@@ -64,16 +64,24 @@ def get_eta(step, total_steps, eta_max, eta_min, schedule='constant'):
     return eta_max
 
 
-def langevin_step(current_image, pred_grad, eta, use_noise=False):
+def langevin_step(current_image, pred_grad, eta, use_noise=False,
+                  noise_method='constant_scale', noise_scale=0.1):
     """η 스케줄 + 선택적 Langevin 노이즈를 적용한 업데이트.
 
-    x_{t+1} = x_t + η * ∇E  [+ sqrt(2η) * z]
+    x_{t+1} = x_t + η * ∇E  [+ noise_term]
+
+    Noise methods:
+        - constant_scale: noise_term = noise_scale * eta * z
     """
     with torch.no_grad():
         new_image = current_image + eta * pred_grad
         if use_noise:
             noise = torch.randn_like(current_image)
-            new_image = new_image + math.sqrt(2 * eta) * noise
+            if noise_method == 'constant_scale':
+                new_image = new_image + noise_scale * eta * noise
+            else:
+                # fallback: original sqrt(2*eta) for unknown methods
+                new_image = new_image + math.sqrt(2 * eta) * noise
         return new_image.detach()
 
 
@@ -82,7 +90,8 @@ def langevin_step(current_image, pred_grad, eta, use_noise=False):
 # ──────────────────────────────────────────────────────────────
 def train_epoch(model, loader, optimizer, device, epoch,
                 gm_steps, gm_step_size, eta_min=0.002,
-                eta_schedule='constant', langevin_noise=False):
+                eta_schedule='constant', langevin_noise=False,
+                noise_method='constant_scale', noise_scale=0.1):
     model.train()
     total_loss = 0.0
     n = 0
@@ -128,7 +137,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
             loss.backward()
             batch_loss += loss.item()
 
-            current_image = langevin_step(current_image, pred_grad, eta, langevin_noise)
+            current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
+                                          noise_method, noise_scale)
 
         optimizer.step()
         avg_step_loss = batch_loss / gm_steps
@@ -144,7 +154,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
 # ──────────────────────────────────────────────────────────────
 @torch.no_grad()
 def validate(model, loader, device, gm_steps, gm_step_size,
-            eta_min=0.002, eta_schedule='constant', langevin_noise=False):
+            eta_min=0.002, eta_schedule='constant', langevin_noise=False,
+            noise_method='constant_scale', noise_scale=0.1):
     model.eval()
     total_loss = 0.0
     n = 0
@@ -185,7 +196,8 @@ def validate(model, loader, device, gm_steps, gm_step_size,
                 loss = F.mse_loss(pred_grad, gt_grad)
                 batch_loss += loss.item()
 
-                current_image = langevin_step(current_image, pred_grad, eta, langevin_noise)
+                current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
+                                              noise_method, noise_scale)
 
         avg_step_loss = batch_loss / gm_steps
         total_loss += avg_step_loss * N
@@ -200,6 +212,7 @@ def validate(model, loader, device, gm_steps, gm_step_size,
 # ──────────────────────────────────────────────────────────────
 def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                     eta_min=0.002, eta_schedule='constant', langevin_noise=False,
+                    noise_method='constant_scale', noise_scale=0.1,
                     eval_plane=20):
     """Val set의 모든 scene에 대해 특정 plane을 생성하고 평균 PSNR을 반환.
     
@@ -247,7 +260,8 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                 )[0]
 
                 use_noise = langevin_noise and (step < gm_steps - 1)
-                current_image = langevin_step(current_image, pred_grad, eta, use_noise)
+                current_image = langevin_step(current_image, pred_grad, eta, use_noise,
+                                              noise_method, noise_scale)
 
         final_img = torch.clamp(current_image, 0, 1).cpu().squeeze()
         psnr_val = calculate_psnr(final_img, gt_cpu).item()
@@ -290,7 +304,7 @@ def main():
             'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda', 'sharp_gamma',
             'activation', 'interleave_rate',
             'epochs', 'batch_size', 'lr', 'weight_decay',
-            'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise',
+            'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise', 'noise_method', 'noise_scale',
             'single_scene_only', 'num_scenes', 'unmatch_ratio', 'save_every',
             'data_dir', 'generated_data_dir', 'output_dir'
         ]
@@ -451,7 +465,7 @@ def main():
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Model params: {total_params:,}  diopter_mode={args.diopter_mode}  energy_head={args.energy_head}")
     print(f"Eta schedule: {args.eta_schedule}  eta_max={args.gm_step_size}  eta_min={args.eta_min}")
-    print(f"Langevin noise: {args.langevin_noise}")
+    print(f"Langevin noise: {args.langevin_noise}  method={args.noise_method}  scale={args.noise_scale}")
 
     # 모델 구조 .txt 저장
     save_model_architecture(model, os.path.join(output_dir, 'model_architecture.txt'), args)
@@ -493,9 +507,11 @@ def main():
 
         train_loss = train_epoch(model, train_loader, optimizer,
                                  device, epoch, args.gm_steps, args.gm_step_size,
-                                 args.eta_min, args.eta_schedule, args.langevin_noise)
+                                 args.eta_min, args.eta_schedule, args.langevin_noise,
+                                 args.noise_method, args.noise_scale)
         val_loss = validate(model, val_loader, device, args.gm_steps, args.gm_step_size,
-                            args.eta_min, args.eta_schedule, args.langevin_noise)
+                            args.eta_min, args.eta_schedule, args.langevin_noise,
+                            args.noise_method, args.noise_scale)
 
         print(f"Train Loss: {train_loss:.6f}  |  Val Loss: {val_loss:.6f}")
 
@@ -503,6 +519,7 @@ def main():
         val_psnr = compute_val_psnr(
             model, val_ds, device, args.gm_steps, args.gm_step_size,
             args.eta_min, args.eta_schedule, args.langevin_noise,
+            args.noise_method, args.noise_scale,
             eval_plane=20
         )
         print(f"Val PSNR (plane 20 avg): {val_psnr:.2f} dB")
@@ -525,6 +542,8 @@ def main():
             'eta_schedule': args.eta_schedule,
             'eta_min': args.eta_min,
             'langevin_noise': args.langevin_noise,
+            'noise_method': args.noise_method,
+            'noise_scale': args.noise_scale,
             'train_loss': train_loss,
             'val_loss': val_loss,
             'val_psnr': val_psnr,
@@ -577,7 +596,7 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
     """체크포인트를 로드하여 대표 focal plane 3장 생성 + 저장"""
     print(f"\n[Final Check - {tag}] Loading {ckpt_path}...")
     print(f"  Using {infer_steps} inference steps (train was {args.gm_steps})")
-    print(f"  Eta schedule: {args.eta_schedule}  noise: {args.langevin_noise}")
+    print(f"  Eta schedule: {args.eta_schedule}  noise: {args.langevin_noise}  method: {args.noise_method}  scale: {args.noise_scale}")
 
     ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt['model_state_dict'])
@@ -628,7 +647,8 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
 
                 # 추론 시 마지막 스텝에서는 노이즈를 끌어서 깨끗한 결과 보장
                 use_noise = args.langevin_noise and (step < infer_steps - 1)
-                current_image = langevin_step(current_image, pred_grad, eta, use_noise)
+                current_image = langevin_step(current_image, pred_grad, eta, use_noise,
+                                              args.noise_method, args.noise_scale)
 
         final_img = torch.clamp(current_image, 0, 1).cpu().squeeze().permute(1, 2, 0).numpy()
         gt_img = gt.cpu().squeeze().permute(1, 2, 0).numpy()

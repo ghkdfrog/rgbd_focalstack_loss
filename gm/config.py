@@ -64,7 +64,12 @@ def get_parser():
     parser.add_argument('--eta_min', type=float, default=0.002,
                         help='Minimum step size for eta schedule (ignored when constant)')
     parser.add_argument('--langevin_noise', action='store_true',
-                        help='Add Langevin noise term sqrt(2*eta)*z at each step')
+                        help='Add Langevin noise term at each step')
+    parser.add_argument('--noise_method', type=str, default='constant_scale',
+                        choices=['constant_scale'],
+                        help='Langevin noise method: constant_scale (noise = scale * eta * z)')
+    parser.add_argument('--noise_scale', type=float, default=0.1,
+                        help='Noise scale factor for constant_scale method (default: 0.1)')
 
     # Dataset
     parser.add_argument('--single_scene_only', action='store_true',
