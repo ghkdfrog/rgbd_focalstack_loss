@@ -302,6 +302,7 @@ def main():
         restore_keys = [
             'arch', 'diopter_mode', 'energy_head', 'channels',
             'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda', 'sharp_gamma',
+            'sharp_prior_method', 'sharp_lambda_mode', 'sharp_gamma_mode',
             'activation', 'interleave_rate',
             'epochs', 'batch_size', 'lr', 'weight_decay',
             'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise', 'noise_method', 'noise_scale',
@@ -397,7 +398,10 @@ def main():
             use_sharp_prior=args.sharp_prior,
             activation=args.activation,
             sharp_lambda_init=args.sharp_lambda,
-            sharp_gamma_init=args.sharp_gamma
+            sharp_gamma_init=args.sharp_gamma,
+            sharp_prior_method=args.sharp_prior_method,
+            sharp_lambda_mode=args.sharp_lambda_mode,
+            sharp_gamma_mode=args.sharp_gamma_mode
         ).to(device)
     elif args.arch == 'resnet_film':
         model = SimpleResNetFiLM(
@@ -410,7 +414,10 @@ def main():
             use_sharp_prior=args.sharp_prior,
             activation=args.activation,
             sharp_lambda_init=args.sharp_lambda,
-            sharp_gamma_init=args.sharp_gamma
+            sharp_gamma_init=args.sharp_gamma,
+            sharp_prior_method=args.sharp_prior_method,
+            sharp_lambda_mode=args.sharp_lambda_mode,
+            sharp_gamma_mode=args.sharp_gamma_mode
         ).to(device)
     elif args.arch == 'resunet':
         model = ResUNet(
@@ -554,7 +561,10 @@ def main():
             'sharp_prior': args.sharp_prior,
             'activation': args.activation,
             'sharp_lambda': args.sharp_lambda,
-            'sharp_gamma': args.sharp_gamma
+            'sharp_gamma': args.sharp_gamma,
+            'sharp_prior_method': args.sharp_prior_method,
+            'sharp_lambda_mode': args.sharp_lambda_mode,
+            'sharp_gamma_mode': args.sharp_gamma_mode
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:

@@ -48,7 +48,11 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     sharp_prior = ckpt.get('sharp_prior', False)
     activation = ckpt.get('activation', 'relu')
     sharp_lambda_init = ckpt.get('sharp_lambda', 10.0)
-    sharp_gamma_init = ckpt.get('sharp_gamma', 30.0)
+    sharp_gamma_init = ckpt.get('sharp_gamma', 100.0)
+    # 하위 호환: 기존 체크포인트에 없으면 기존 동작(penalty, learnable)
+    sharp_prior_method = ckpt.get('sharp_prior_method', 'penalty')
+    sharp_lambda_mode = ckpt.get('sharp_lambda_mode', 'learnable')
+    sharp_gamma_mode = ckpt.get('sharp_gamma_mode', 'learnable')
 
     # 하위 호환: 기존 film_resnet → resnet + use_film=True
     if arch == 'film_resnet':
@@ -60,9 +64,23 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     elif arch == 'stride':
         model = SimpleCNNStride(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'resnet':
-        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
+        model = SimpleResNet(
+            diopter_mode=diopter_mode, energy_head=energy_head,
+            num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip,
+            use_sharp_prior=sharp_prior, activation=activation,
+            sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init,
+            sharp_prior_method=sharp_prior_method,
+            sharp_lambda_mode=sharp_lambda_mode, sharp_gamma_mode=sharp_gamma_mode
+        ).to(device)
     elif arch == 'resnet_film':
-        model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
+        model = SimpleResNetFiLM(
+            diopter_mode=diopter_mode, energy_head=energy_head,
+            num_blocks=4, channels=channels, long_skip=long_skip,
+            use_sharp_prior=sharp_prior, activation=activation,
+            sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init,
+            sharp_prior_method=sharp_prior_method,
+            sharp_lambda_mode=sharp_lambda_mode, sharp_gamma_mode=sharp_gamma_mode
+        ).to(device)
     elif arch == 'resunet':
         model = ResUNet(diopter_mode=diopter_mode, energy_head=energy_head, base_channels=channels, num_bottleneck_blocks=3, use_film=use_film).to(device)
     elif arch == 'convnext':
