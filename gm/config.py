@@ -46,11 +46,11 @@ def get_parser():
     parser.add_argument('--sharp_lambda_mode', type=str, default='learnable',
                         choices=['learnable', 'fixed'],
                         help='Sharp Prior lambda mode: learnable or fixed. Default: learnable')
-    parser.add_argument('--sharp_gamma', type=float, default=30.0,
-                        help='Sharp Prior gamma (CoC decay rate). Default: 30.0')
-    parser.add_argument('--sharp_gamma_mode', type=str, default='learnable',
+    parser.add_argument('--sharp_gamma', type=float, default=100.0,
+                        help='Sharp Prior gamma (CoC decay rate). Default: 100.0')
+    parser.add_argument('--sharp_gamma_mode', type=str, default='fixed',
                         choices=['learnable', 'fixed'],
-                        help='Sharp Prior gamma mode: learnable or fixed. Default: learnable')
+                        help='Sharp Prior gamma mode: learnable or fixed. Default: fixed')
     parser.add_argument('--activation', type=str, default='relu',
                         choices=['relu', 'silu'],
                         help='Activation function: relu (default) or silu')

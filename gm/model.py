@@ -215,9 +215,9 @@ class SimpleResNet(nn.Module):
     def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc',
                  num_blocks=4, channels=256, use_film=False, long_skip=False,
                  use_sharp_prior=False, activation='relu',
-                 sharp_lambda_init=10.0, sharp_gamma_init=30.0,
+                 sharp_lambda_init=10.0, sharp_gamma_init=100.0,
                  sharp_prior_method='penalty',
-                 sharp_lambda_mode='learnable', sharp_gamma_mode='learnable'):
+                 sharp_lambda_mode='learnable', sharp_gamma_mode='fixed'):
         super(SimpleResNet, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -258,20 +258,8 @@ class SimpleResNet(nn.Module):
 
         # Sharp Prior: 초점 영역에서 원본 RGB로 당기는 해석적 이차항
         if use_sharp_prior:
-            self.sharp_prior_method = sharp_prior_method
-            if sharp_prior_method == 'energy_density' and energy_head != 'conv1x1':
-                raise ValueError(
-                    "sharp_prior_method='energy_density' requires energy_head='conv1x1'. "
-                    "fc head는 공간 정보를 잃어 에너지 밀도 가중을 적용할 수 없습니다."
-                )
-            self.sharp_lambda = nn.Parameter(
-                torch.tensor(sharp_lambda_init),
-                requires_grad=(sharp_lambda_mode == 'learnable')
-            )
-            self.sharp_gamma = nn.Parameter(
-                torch.tensor(sharp_gamma_init),
-                requires_grad=(sharp_gamma_mode == 'learnable')
-            )
+            self.sharp_lambda = nn.Parameter(torch.tensor(sharp_lambda_init))
+            self.sharp_gamma = nn.Parameter(torch.tensor(sharp_gamma_init))
 
     def _get_cond_map(self, x, diopter, N, H, W):
         """FiLM conditioning용 condition map 추출"""
@@ -318,16 +306,8 @@ class SimpleResNet(nn.Module):
 
         # ── Energy head ──
         if self.energy_head == 'conv1x1':
-            e_pixel = self.conv_energy(x)  # (N, 1, H, W)
-            # Energy density 모드: sharp prior가 활성이면 (1-w) 가중 적용
-            if (self.use_sharp_prior
-                    and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']
-                    and hasattr(self, 'sharp_prior_method')
-                    and self.sharp_prior_method == 'energy_density'):
-                coc_abs_ed = torch.abs(coc_for_prior)
-                w_ed = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs_ed)
-                e_pixel = (1 - w_ed) * e_pixel
-            eng = torch.sum(e_pixel, dim=(2, 3))   # (N, 1)
+            x = self.conv_energy(x)
+            eng = torch.sum(x, dim=(2, 3))   # (N, 1)
         else:  # 'fc'
             x = torch.flatten(x, 1)
             eng = self.fc(x)                  # (N, 1)
@@ -335,11 +315,13 @@ class SimpleResNet(nn.Module):
         # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
         if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             coc_abs = torch.abs(coc_for_prior)  # (N, 1, H, W)
+            # w(coc): CoC≈0 → 1 (초점 영역), CoC↑ → 0 (블러 영역)
             w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
+            # 이차 페널티: 초점 영역에서 y → rgb 방향으로 당기는 에너지
             sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
                 w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
-            )
-            eng = eng - sharp_penalty.unsqueeze(-1)
+            )  # (N,)
+            eng = eng - sharp_penalty.unsqueeze(-1)  # (N, 1)
 
         return eng
 
@@ -363,9 +345,9 @@ class SimpleResNetFiLM(nn.Module):
     def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
                  num_blocks=4, channels=256, long_skip=False,
                  use_sharp_prior=False, activation='relu',
-                 sharp_lambda_init=10.0, sharp_gamma_init=30.0,
+                 sharp_lambda_init=10.0, sharp_gamma_init=100.0,
                  sharp_prior_method='penalty',
-                 sharp_lambda_mode='learnable', sharp_gamma_mode='learnable'):
+                 sharp_lambda_mode='learnable', sharp_gamma_mode='fixed'):
         super(SimpleResNetFiLM, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -396,20 +378,8 @@ class SimpleResNetFiLM(nn.Module):
 
         # Sharp Prior: 초점 영역에서 원본 RGB로 당기는 해석적 이차항
         if use_sharp_prior:
-            self.sharp_prior_method = sharp_prior_method
-            if sharp_prior_method == 'energy_density' and energy_head != 'conv1x1':
-                raise ValueError(
-                    "sharp_prior_method='energy_density' requires energy_head='conv1x1'. "
-                    "fc head는 공간 정보를 잃어 에너지 밀도 가중을 적용할 수 없습니다."
-                )
-            self.sharp_lambda = nn.Parameter(
-                torch.tensor(sharp_lambda_init),
-                requires_grad=(sharp_lambda_mode == 'learnable')
-            )
-            self.sharp_gamma = nn.Parameter(
-                torch.tensor(sharp_gamma_init),
-                requires_grad=(sharp_gamma_mode == 'learnable')
-            )
+            self.sharp_lambda = nn.Parameter(torch.tensor(sharp_lambda_init))
+            self.sharp_gamma = nn.Parameter(torch.tensor(sharp_gamma_init))
 
     def forward(self, x, diopter):
         N, C, H, W = x.shape
@@ -445,16 +415,8 @@ class SimpleResNetFiLM(nn.Module):
 
         # ── Energy head ──
         if self.energy_head == 'conv1x1':
-            e_pixel = self.conv_energy(x)  # (N, 1, H, W)
-            # Energy density 모드: sharp prior가 활성이면 (1-w) 가중 적용
-            if (self.use_sharp_prior
-                    and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']
-                    and hasattr(self, 'sharp_prior_method')
-                    and self.sharp_prior_method == 'energy_density'):
-                coc_abs_ed = torch.abs(cond_map)
-                w_ed = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs_ed)
-                e_pixel = (1 - w_ed) * e_pixel
-            eng = torch.sum(e_pixel, dim=(2, 3))   # (N, 1)
+            x = self.conv_energy(x)
+            eng = torch.sum(x, dim=(2, 3))   # (N, 1)
         else:  # 'fc'
             x = torch.flatten(x, 1)
             eng = self.fc(x)                  # (N, 1)
@@ -462,7 +424,9 @@ class SimpleResNetFiLM(nn.Module):
         # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
         if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             coc_abs = torch.abs(cond_map)  # (N, 1, H, W)
+            # w(coc): CoC≈0 → 1 (초점 영역), CoC↑ → 0 (블러 영역)
             w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
+            # 이차 페널티: 초점 영역에서 y → rgb 방향으로 당기는 에너지
             sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
                 w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
             )  # (N,)
