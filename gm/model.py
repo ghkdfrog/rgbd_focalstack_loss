@@ -215,9 +215,9 @@ class SimpleResNet(nn.Module):
     def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc',
                  num_blocks=4, channels=256, use_film=False, long_skip=False,
                  use_sharp_prior=False, activation='relu',
-                 sharp_lambda_init=10.0, sharp_gamma_init=100.0,
+                 sharp_lambda_init=10.0, sharp_gamma_init=30.0,
                  sharp_prior_method='penalty',
-                 sharp_lambda_mode='learnable', sharp_gamma_mode='fixed'):
+                 sharp_lambda_mode='learnable', sharp_gamma_mode='learnable'):
         super(SimpleResNet, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -363,9 +363,9 @@ class SimpleResNetFiLM(nn.Module):
     def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
                  num_blocks=4, channels=256, long_skip=False,
                  use_sharp_prior=False, activation='relu',
-                 sharp_lambda_init=10.0, sharp_gamma_init=100.0,
+                 sharp_lambda_init=10.0, sharp_gamma_init=30.0,
                  sharp_prior_method='penalty',
-                 sharp_lambda_mode='learnable', sharp_gamma_mode='fixed'):
+                 sharp_lambda_mode='learnable', sharp_gamma_mode='learnable'):
         super(SimpleResNetFiLM, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
