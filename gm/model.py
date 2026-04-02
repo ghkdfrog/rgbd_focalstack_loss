@@ -316,34 +316,30 @@ class SimpleResNet(nn.Module):
         else:
             x = self.res_blocks(x)
 
-        # ── Energy 계산 (sharp prior method에 따라 분기) ──
+        # ── Energy head ──
+        if self.energy_head == 'conv1x1':
+            e_pixel = self.conv_energy(x)  # (N, 1, H, W)
+            # Energy density 모드: sharp prior가 활성이면 (1-w) 가중 적용
+            if (self.use_sharp_prior
+                    and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']
+                    and hasattr(self, 'sharp_prior_method')
+                    and self.sharp_prior_method == 'energy_density'):
+                coc_abs_ed = torch.abs(coc_for_prior)
+                w_ed = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs_ed)
+                e_pixel = (1 - w_ed) * e_pixel
+            eng = torch.sum(e_pixel, dim=(2, 3))   # (N, 1)
+        else:  # 'fc'
+            x = torch.flatten(x, 1)
+            eng = self.fc(x)                  # (N, 1)
+
+        # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
         if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             coc_abs = torch.abs(coc_for_prior)  # (N, 1, H, W)
             w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
-
-            if self.energy_head == 'conv1x1':
-                e_pixel = self.conv_energy(x)  # (N, 1, H, W)
-                if self.sharp_prior_method == 'energy_density':
-                    # Option B': 에너지 밀도에 (1-w) 가중 → EBM 유지
-                    e_pixel = (1 - w) * e_pixel
-                eng = torch.sum(e_pixel, dim=(2, 3))  # (N, 1)
-            else:  # 'fc' — penalty 모드만 허용 (init에서 검증 완료)
-                x = torch.flatten(x, 1)
-                eng = self.fc(x)  # (N, 1)
-
-            # Sharp penalty: 두 method 모두 동일하게 적용
             sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
                 w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
             )
             eng = eng - sharp_penalty.unsqueeze(-1)
-        else:
-            # Sharp prior 비활성 또는 spatial 모드: 기존 energy head 그대로
-            if self.energy_head == 'conv1x1':
-                x = self.conv_energy(x)
-                eng = torch.sum(x, dim=(2, 3))   # (N, 1)
-            else:  # 'fc'
-                x = torch.flatten(x, 1)
-                eng = self.fc(x)                  # (N, 1)
 
         return eng
 
@@ -447,34 +443,30 @@ class SimpleResNetFiLM(nn.Module):
             for block in self.res_blocks:
                 x = block(x, cond_map)
 
-        # ── Energy 계산 (sharp prior method에 따라 분기) ──
+        # ── Energy head ──
+        if self.energy_head == 'conv1x1':
+            e_pixel = self.conv_energy(x)  # (N, 1, H, W)
+            # Energy density 모드: sharp prior가 활성이면 (1-w) 가중 적용
+            if (self.use_sharp_prior
+                    and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']
+                    and hasattr(self, 'sharp_prior_method')
+                    and self.sharp_prior_method == 'energy_density'):
+                coc_abs_ed = torch.abs(cond_map)
+                w_ed = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs_ed)
+                e_pixel = (1 - w_ed) * e_pixel
+            eng = torch.sum(e_pixel, dim=(2, 3))   # (N, 1)
+        else:  # 'fc'
+            x = torch.flatten(x, 1)
+            eng = self.fc(x)                  # (N, 1)
+
+        # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
         if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             coc_abs = torch.abs(cond_map)  # (N, 1, H, W)
             w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
-
-            if self.energy_head == 'conv1x1':
-                e_pixel = self.conv_energy(x)  # (N, 1, H, W)
-                if self.sharp_prior_method == 'energy_density':
-                    # Option B': 에너지 밀도에 (1-w) 가중 → EBM 유지
-                    e_pixel = (1 - w) * e_pixel
-                eng = torch.sum(e_pixel, dim=(2, 3))  # (N, 1)
-            else:  # 'fc' — penalty 모드만 허용 (init에서 검증 완료)
-                x = torch.flatten(x, 1)
-                eng = self.fc(x)  # (N, 1)
-
-            # Sharp penalty: 두 method 모두 동일하게 적용
             sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
                 w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
             )  # (N,)
             eng = eng - sharp_penalty.unsqueeze(-1)  # (N, 1)
-        else:
-            # Sharp prior 비활성 또는 spatial 모드: 기존 energy head 그대로
-            if self.energy_head == 'conv1x1':
-                x = self.conv_energy(x)
-                eng = torch.sum(x, dim=(2, 3))   # (N, 1)
-            else:  # 'fc'
-                x = torch.flatten(x, 1)
-                eng = self.fc(x)                  # (N, 1)
 
         return eng
 
