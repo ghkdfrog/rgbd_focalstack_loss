@@ -150,7 +150,7 @@ def train_epoch(model, loader, optimizer, device, epoch,
             continue
 
         # Gradient clipping → second-order gradient 폭발 방지
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
 
         optimizer.step()
         total_loss += avg_step_loss * N
