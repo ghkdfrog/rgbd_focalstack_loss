@@ -10,6 +10,7 @@ Usage:
 import os
 import sys
 import json
+import math
 from datetime import datetime
 
 import numpy as np
@@ -140,8 +141,18 @@ def train_epoch(model, loader, optimizer, device, epoch,
             current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
                                           noise_method, noise_scale)
 
-        optimizer.step()
         avg_step_loss = batch_loss / gm_steps
+
+        # NaN 감지 → 해당 배치 스킵 (gradient 초기화)
+        if not math.isfinite(avg_step_loss):
+            optimizer.zero_grad()
+            pbar.set_postfix(loss='NaN(skip)')
+            continue
+
+        # Gradient clipping → second-order gradient 폭발 방지
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        optimizer.step()
         total_loss += avg_step_loss * N
         n += N
         pbar.set_postfix(loss=f'{avg_step_loss:.4f}')
