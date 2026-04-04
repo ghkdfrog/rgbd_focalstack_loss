@@ -10,7 +10,6 @@ Usage:
 import os
 import sys
 import json
-import math
 from datetime import datetime
 
 import numpy as np
@@ -141,18 +140,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
             current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
                                           noise_method, noise_scale)
 
-        avg_step_loss = batch_loss / gm_steps
-
-        # NaN 감지 → 해당 배치 스킵 (gradient 초기화)
-        if not math.isfinite(avg_step_loss):
-            optimizer.zero_grad()
-            pbar.set_postfix(loss='NaN(skip)')
-            continue
-
-        # Gradient clipping → second-order gradient 폭발 방지
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-
         optimizer.step()
+        avg_step_loss = batch_loss / gm_steps
         total_loss += avg_step_loss * N
         n += N
         pbar.set_postfix(loss=f'{avg_step_loss:.4f}')
@@ -313,7 +302,6 @@ def main():
         restore_keys = [
             'arch', 'diopter_mode', 'energy_head', 'channels',
             'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda', 'sharp_gamma',
-            'sharp_prior_method', 'sharp_lambda_mode', 'sharp_gamma_mode',
             'activation', 'interleave_rate',
             'epochs', 'batch_size', 'lr', 'weight_decay',
             'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise', 'noise_method', 'noise_scale',
@@ -409,10 +397,7 @@ def main():
             use_sharp_prior=args.sharp_prior,
             activation=args.activation,
             sharp_lambda_init=args.sharp_lambda,
-            sharp_gamma_init=args.sharp_gamma,
-            sharp_prior_method=args.sharp_prior_method,
-            sharp_lambda_mode=args.sharp_lambda_mode,
-            sharp_gamma_mode=args.sharp_gamma_mode
+            sharp_gamma_init=args.sharp_gamma
         ).to(device)
     elif args.arch == 'resnet_film':
         model = SimpleResNetFiLM(
@@ -425,10 +410,7 @@ def main():
             use_sharp_prior=args.sharp_prior,
             activation=args.activation,
             sharp_lambda_init=args.sharp_lambda,
-            sharp_gamma_init=args.sharp_gamma,
-            sharp_prior_method=args.sharp_prior_method,
-            sharp_lambda_mode=args.sharp_lambda_mode,
-            sharp_gamma_mode=args.sharp_gamma_mode
+            sharp_gamma_init=args.sharp_gamma
         ).to(device)
     elif args.arch == 'resunet':
         model = ResUNet(
@@ -572,10 +554,7 @@ def main():
             'sharp_prior': args.sharp_prior,
             'activation': args.activation,
             'sharp_lambda': args.sharp_lambda,
-            'sharp_gamma': args.sharp_gamma,
-            'sharp_prior_method': args.sharp_prior_method,
-            'sharp_lambda_mode': args.sharp_lambda_mode,
-            'sharp_gamma_mode': args.sharp_gamma_mode
+            'sharp_gamma': args.sharp_gamma
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:

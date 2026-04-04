@@ -205,19 +205,12 @@ class SimpleResNet(nn.Module):
     - long_skip=True 이면 블록 간 1-layer interval element-wise add skip connection 적용
       (DeepFocus 스타일: block[i] input = block[i-1] output + block[i-2] output)
     - use_sharp_prior: CoC 기반 Sharpness Prior (초점 영역 선명화)
-    - sharp_prior_method:
-        'penalty'        — Option A: E = E_nn − λ/2·Σw·‖y−rgb‖² (에너지 패널티)
-        'energy_density' — Option B': E = Σ(1−w)·e_pixel − λ/2·Σw·‖y−rgb‖²
-                           (에너지 밀도 가중, conv1x1 전용)
-    - sharp_lambda_mode / sharp_gamma_mode: 'learnable' 또는 'fixed'
     - activation: 'relu' 또는 'silu'
     """
     def __init__(self, input_channels=7, diopter_mode='spatial', energy_head='fc',
                  num_blocks=4, channels=256, use_film=False, long_skip=False,
                  use_sharp_prior=False, activation='relu',
-                 sharp_lambda_init=10.0, sharp_gamma_init=100.0,
-                 sharp_prior_method='penalty',
-                 sharp_lambda_mode='learnable', sharp_gamma_mode='fixed'):
+                 sharp_lambda_init=10.0, sharp_gamma_init=30.0):
         super(SimpleResNet, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -304,7 +297,6 @@ class SimpleResNet(nn.Module):
         else:
             x = self.res_blocks(x)
 
-        # ── Energy head ──
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)
             eng = torch.sum(x, dim=(2, 3))   # (N, 1)
@@ -315,13 +307,11 @@ class SimpleResNet(nn.Module):
         # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
         if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
             coc_abs = torch.abs(coc_for_prior)  # (N, 1, H, W)
-            # w(coc): CoC≈0 → 1 (초점 영역), CoC↑ → 0 (블러 영역)
             w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
-            # 이차 페널티: 초점 영역에서 y → rgb 방향으로 당기는 에너지
             sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
                 w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
-            )  # (N,)
-            eng = eng - sharp_penalty.unsqueeze(-1)  # (N, 1)
+            )
+            eng = eng - sharp_penalty.unsqueeze(-1)
 
         return eng
 
@@ -335,19 +325,12 @@ class SimpleResNetFiLM(nn.Module):
     - Spatial 모드: diopter를 FiLM condition으로 사용 (입력 7ch 유지)
     - 나머지 구조는 SimpleResNet과 동일 (long_skip 지원)
     - use_sharp_prior: CoC 기반 Sharpness Prior (초점 영역 선명화)
-    - sharp_prior_method:
-        'penalty'        — Option A: E = E_nn − λ/2·Σw·‖y−rgb‖² (에너지 패널티)
-        'energy_density' — Option B': E = Σ(1−w)·e_pixel − λ/2·Σw·‖y−rgb‖²
-                           (에너지 밀도 가중, conv1x1 전용)
-    - sharp_lambda_mode / sharp_gamma_mode: 'learnable' 또는 'fixed'
     - activation: 'relu' 또는 'silu'
     """
     def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
                  num_blocks=4, channels=256, long_skip=False,
                  use_sharp_prior=False, activation='relu',
-                 sharp_lambda_init=10.0, sharp_gamma_init=100.0,
-                 sharp_prior_method='penalty',
-                 sharp_lambda_mode='learnable', sharp_gamma_mode='fixed'):
+                 sharp_lambda_init=10.0, sharp_gamma_init=30.0):
         super(SimpleResNetFiLM, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -413,7 +396,6 @@ class SimpleResNetFiLM(nn.Module):
             for block in self.res_blocks:
                 x = block(x, cond_map)
 
-        # ── Energy head ──
         if self.energy_head == 'conv1x1':
             x = self.conv_energy(x)
             eng = torch.sum(x, dim=(2, 3))   # (N, 1)

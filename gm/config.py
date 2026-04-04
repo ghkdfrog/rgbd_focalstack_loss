@@ -37,20 +37,11 @@ def get_parser():
     parser.add_argument('--interleave_rate', type=int, default=2,
                         help='Pixel shuffle interleave rate for interleave_resnet (default: 2)')
     parser.add_argument('--sharp_prior', action='store_true',
-                        help='Enable Sharpness Prior for in-focus regions (resnet, resnet_film)')
-    parser.add_argument('--sharp_prior_method', type=str, default='penalty',
-                        choices=['penalty', 'energy_density'],
-                        help='Sharp Prior method: penalty (E-penalty, Option A) or energy_density (pixel energy weighting, Option B\').')
+                        help='Enable Sharpness Prior for in-focus regions (resnet_film only)')
     parser.add_argument('--sharp_lambda', type=float, default=10.0,
-                        help='Sharp Prior lambda (strength). Default: 10.0')
-    parser.add_argument('--sharp_lambda_mode', type=str, default='learnable',
-                        choices=['learnable', 'fixed'],
-                        help='Sharp Prior lambda mode: learnable or fixed. Default: learnable')
-    parser.add_argument('--sharp_gamma', type=float, default=100.0,
-                        help='Sharp Prior gamma (CoC decay rate). Default: 100.0')
-    parser.add_argument('--sharp_gamma_mode', type=str, default='fixed',
-                        choices=['learnable', 'fixed'],
-                        help='Sharp Prior gamma mode: learnable or fixed. Default: fixed')
+                        help='Sharp Prior lambda (initial strength, learnable). Default: 10.0')
+    parser.add_argument('--sharp_gamma', type=float, default=30.0,
+                        help='Sharp Prior gamma (CoC decay rate, learnable). Default: 30.0')
     parser.add_argument('--activation', type=str, default='relu',
                         choices=['relu', 'silu'],
                         help='Activation function: relu (default) or silu')
