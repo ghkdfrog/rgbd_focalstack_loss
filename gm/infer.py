@@ -46,7 +46,6 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     long_skip = ckpt.get('long_skip', long_skip)
     interleave_rate = ckpt.get('interleave_rate', interleave_rate)
     sharp_prior = ckpt.get('sharp_prior', False)
-    sharp_prior_mode = ckpt.get('sharp_prior_mode', 'fixed')
     activation = ckpt.get('activation', 'relu')
     sharp_lambda_init = ckpt.get('sharp_lambda', 10.0)
     sharp_gamma_init = ckpt.get('sharp_gamma', 30.0)
@@ -61,9 +60,9 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     elif arch == 'stride':
         model = SimpleCNNStride(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'resnet':
-        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init, sharp_prior_mode=sharp_prior_mode).to(device)
+        model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
     elif arch == 'resnet_film':
-        model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init, sharp_prior_mode=sharp_prior_mode).to(device)
+        model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
     elif arch == 'resunet':
         model = ResUNet(diopter_mode=diopter_mode, energy_head=energy_head, base_channels=channels, num_bottleneck_blocks=3, use_film=use_film).to(device)
     elif arch == 'convnext':
@@ -112,11 +111,28 @@ def resolve_ckpt_paths(run_dir, ckpt_tag):
 
 def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                        eta_min=0.002, eta_schedule='constant', use_langevin_noise=False,
-                       noise_method='constant_scale', noise_scale=0.1):
-    """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR/energy를 반환"""
+                       noise_method='constant_scale', noise_scale=0.1,
+                       infer_sharp=False, infer_sharp_lambda=5.0,
+                       infer_sharp_gamma=30.0, infer_sharp_start=0.5):
+    """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR/energy를 반환
+
+    infer_sharp: True이면 inference-time sharpening 적용
+        모델 gradient에 해석적 sharp prior gradient를 추가:
+        ∇E_sharp = -λ · w(coc) · (y - rgb)
+        w(coc) = exp(-γ · |coc|)
+        초점 영역(CoC≈0)에서 y → rgb 방향으로 당기는 효과
+    infer_sharp_start: 전체 step 대비 sharpening 시작 비율 (0.0~1.0)
+        초반에는 모델 gradient만으로 이미지 구조를 잡고,
+        후반부터 선명화를 적용하여 안정적인 수렴 보장
+    """
     N, C, H, W = x.shape
     step_psnr_history = []
     gt_cpu = gt.cpu().squeeze()  # step별 PSNR 계산용 (미리 CPU로)
+
+    # Sharp prior용 원본 RGB & CoC 맵 추출
+    rgb_in = x[:, :3, :, :]  # 원본 RGB (3ch)
+    coc_map = x[:, 7:8, :, :] if C > 7 else None  # CoC (1ch)
+    sharp_start_step = int(gm_steps * infer_sharp_start)
 
     with torch.enable_grad():
         current_image = torch.randn_like(gt).to(device)
@@ -142,6 +158,17 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                 grad_outputs=torch.ones_like(energy),
                 create_graph=False
             )[0]
+
+            # ── Inference-time Sharpening ──
+            # 해석적 gradient: ∇E_sharp/∂y = -λ · w(coc) · (y - rgb)
+            # autograd 없이 직접 계산 → NaN 위험 없음
+            if infer_sharp and coc_map is not None and step >= sharp_start_step:
+                with torch.no_grad():
+                    coc_abs = torch.abs(coc_map)  # (N, 1, H, W)
+                    w = torch.exp(-infer_sharp_gamma * coc_abs)  # CoC≈0 → 1, CoC↑ → 0
+                    # ∂E_sharp/∂y = -λ · w · (y - rgb)  →  y를 rgb 방향으로 당김
+                    sharp_grad = -infer_sharp_lambda * w * (current_image.detach() - rgb_in)
+                    grad = grad + sharp_grad
 
             # 마지막 스텝에서는 노이즈 없이 깨끗하게 마무리
             noise = use_langevin_noise and (step < gm_steps - 1)
@@ -328,7 +355,11 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
         'noise_method': noise_method,
         'noise_scale': noise_scale,
         'diopter_mode': diopter_mode,
-        'plane_indices': plane_indices
+        'plane_indices': plane_indices,
+        'infer_sharp': args.infer_sharp,
+        'infer_sharp_lambda': args.infer_sharp_lambda,
+        'infer_sharp_gamma': args.infer_sharp_gamma,
+        'infer_sharp_start': args.infer_sharp_start
     }
     with open(os.path.join(out_subdir, 'infer_config.json'), 'w') as f:
         json.dump(infer_config, f, indent=2)
@@ -358,7 +389,9 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
 
         final_image, psnr, history, step_psnr_history = generate_one_plane(
             model, x, diopter, gt, device, gm_steps, gm_step_size,
-            eta_min, eta_schedule, langevin_noise, noise_method, noise_scale
+            eta_min, eta_schedule, langevin_noise, noise_method, noise_scale,
+            infer_sharp=args.infer_sharp, infer_sharp_lambda=args.infer_sharp_lambda,
+            infer_sharp_gamma=args.infer_sharp_gamma, infer_sharp_start=args.infer_sharp_start
         )
 
         all_step_data[p_idx] = step_psnr_history
@@ -465,6 +498,11 @@ def main():
     print(f"  prototype    : {single_scene_only} → split='{infer_split}'")
     print(f"  ckpt_tag     : {args.ckpt_tag}")
     print(f"  plane_idx    : {args.plane_idx}")
+    print(f"  infer_sharp  : {args.infer_sharp}")
+    if args.infer_sharp:
+        print(f"    lambda     : {args.infer_sharp_lambda}")
+        print(f"    gamma      : {args.infer_sharp_gamma}")
+        print(f"    start      : {args.infer_sharp_start} ({int(gm_steps * args.infer_sharp_start)}/{gm_steps} step)")
     print(f"{'='*50}\n")
 
     # 데이터셋
