@@ -38,10 +38,13 @@ def get_parser():
                         help='Pixel shuffle interleave rate for interleave_resnet (default: 2)')
     parser.add_argument('--sharp_prior', action='store_true',
                         help='Enable Sharpness Prior for in-focus regions (resnet_film only)')
+    parser.add_argument('--sharp_prior_mode', type=str, default='fixed',
+                        choices=['learnable', 'fixed'],
+                        help='Sharp Prior parameter mode: learnable (nn.Parameter) or fixed (constant). Default: fixed')
     parser.add_argument('--sharp_lambda', type=float, default=10.0,
-                        help='Sharp Prior lambda (initial strength, learnable). Default: 10.0')
+                        help='Sharp Prior lambda (strength). Default: 10.0')
     parser.add_argument('--sharp_gamma', type=float, default=30.0,
-                        help='Sharp Prior gamma (CoC decay rate, learnable). Default: 30.0')
+                        help='Sharp Prior gamma (CoC decay rate). Default: 30.0')
     parser.add_argument('--activation', type=str, default='relu',
                         choices=['relu', 'silu'],
                         help='Activation function: relu (default) or silu')
