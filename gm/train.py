@@ -85,13 +85,34 @@ def langevin_step(current_image, pred_grad, eta, use_noise=False,
         return new_image.detach()
 
 
+def compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma):
+    """Stop-gradient bypass: analytical sharp prior gradient.
+
+    ∂E_sharp/∂y = -λ · w(coc) · (y - rgb)
+    w(coc) = exp(-γ · |coc|)
+
+    Computed inside torch.no_grad() → no autograd graph created.
+    Returns None if CoC channel is not available (C <= 7).
+    """
+    N, C, H, W = x.shape
+    if C <= 7:
+        return None
+    with torch.no_grad():
+        rgb_in = x[:, :3, :, :]
+        coc_map = x[:, 7:8, :, :]
+        coc_abs = torch.abs(coc_map)
+        w = torch.exp(-bypass_gamma * coc_abs)
+        return -bypass_lambda * w * (current_image.detach() - rgb_in)
+
+
 # ──────────────────────────────────────────────────────────────
 # Training (one epoch)
 # ──────────────────────────────────────────────────────────────
 def train_epoch(model, loader, optimizer, device, epoch,
                 gm_steps, gm_step_size, eta_min=0.002,
                 eta_schedule='constant', langevin_noise=False,
-                noise_method='constant_scale', noise_scale=0.1):
+                noise_method='constant_scale', noise_scale=0.1,
+                bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0):
     model.train()
     total_loss = 0.0
     n = 0
@@ -132,6 +153,12 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 create_graph=True
             )[0]
 
+            # Stop-gradient bypass: analytical sharp prior gradient
+            if bypass_alpha > 0:
+                bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                if bg is not None:
+                    pred_grad = pred_grad + bypass_alpha * bg
+
             gt_grad = gt - current_image
             loss = F.mse_loss(pred_grad, gt_grad)
             loss.backward()
@@ -155,7 +182,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
 @torch.no_grad()
 def validate(model, loader, device, gm_steps, gm_step_size,
             eta_min=0.002, eta_schedule='constant', langevin_noise=False,
-            noise_method='constant_scale', noise_scale=0.1):
+            noise_method='constant_scale', noise_scale=0.1,
+            bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0):
     model.eval()
     total_loss = 0.0
     n = 0
@@ -192,6 +220,12 @@ def validate(model, loader, device, gm_steps, gm_step_size,
                     create_graph=False
                 )[0]
 
+                # Stop-gradient bypass
+                if bypass_alpha > 0:
+                    bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                    if bg is not None:
+                        pred_grad = pred_grad + bypass_alpha * bg
+
                 gt_grad = gt - current_image
                 loss = F.mse_loss(pred_grad, gt_grad)
                 batch_loss += loss.item()
@@ -213,7 +247,8 @@ def validate(model, loader, device, gm_steps, gm_step_size,
 def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                     eta_min=0.002, eta_schedule='constant', langevin_noise=False,
                     noise_method='constant_scale', noise_scale=0.1,
-                    eval_plane=20):
+                    eval_plane=20,
+                    bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0):
     """Val set의 모든 scene에 대해 특정 plane을 생성하고 평균 PSNR을 반환.
     
     val_loss와 달리 실제 이미지 생성 품질을 측정하므로,
@@ -258,6 +293,12 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                     energy, current_image, torch.ones_like(energy),
                     create_graph=False
                 )[0]
+
+                # Stop-gradient bypass
+                if bypass_alpha > 0:
+                    bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                    if bg is not None:
+                        pred_grad = pred_grad + bypass_alpha * bg
 
                 use_noise = langevin_noise and (step < gm_steps - 1)
                 current_image = langevin_step(current_image, pred_grad, eta, use_noise,
@@ -305,6 +346,7 @@ def main():
             'activation', 'interleave_rate',
             'epochs', 'batch_size', 'lr', 'weight_decay',
             'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise', 'noise_method', 'noise_scale',
+            'train_bypass', 'bypass_lambda', 'bypass_gamma', 'bypass_warmup', 'bypass_ramp',
             'single_scene_only', 'num_scenes', 'unmatch_ratio', 'save_every',
             'data_dir', 'generated_data_dir', 'output_dir'
         ]
@@ -466,6 +508,8 @@ def main():
     print(f"Model params: {total_params:,}  diopter_mode={args.diopter_mode}  energy_head={args.energy_head}")
     print(f"Eta schedule: {args.eta_schedule}  eta_max={args.gm_step_size}  eta_min={args.eta_min}")
     print(f"Langevin noise: {args.langevin_noise}  method={args.noise_method}  scale={args.noise_scale}")
+    if args.train_bypass:
+        print(f"Train bypass: lambda={args.bypass_lambda}  gamma={args.bypass_gamma}  warmup={args.bypass_warmup}  ramp={args.bypass_ramp}")
 
     # 모델 구조 .txt 저장
     save_model_architecture(model, os.path.join(output_dir, 'model_architecture.txt'), args)
@@ -496,6 +540,17 @@ def main():
     for epoch in range(start_epoch, args.epochs + 1):
         print(f"\n=== Epoch {epoch}/{args.epochs} ===")
 
+        # Bypass alpha: warmup → ramp → full
+        if args.train_bypass:
+            if args.bypass_ramp > 0:
+                bypass_alpha = min(1.0, max(0.0, (epoch - args.bypass_warmup) / args.bypass_ramp))
+            else:
+                bypass_alpha = 1.0 if epoch > args.bypass_warmup else 0.0
+            if epoch <= args.bypass_warmup + args.bypass_ramp:
+                print(f"  Bypass alpha: {bypass_alpha:.3f}")
+        else:
+            bypass_alpha = 0.0
+
         if args.unmatch_ratio > 0:
             train_ds.resample_unmatch()
             print(f"  Resampled: {len(train_ds)} total samples")
@@ -508,10 +563,12 @@ def main():
         train_loss = train_epoch(model, train_loader, optimizer,
                                  device, epoch, args.gm_steps, args.gm_step_size,
                                  args.eta_min, args.eta_schedule, args.langevin_noise,
-                                 args.noise_method, args.noise_scale)
+                                 args.noise_method, args.noise_scale,
+                                 args.bypass_lambda, args.bypass_gamma, bypass_alpha)
         val_loss = validate(model, val_loader, device, args.gm_steps, args.gm_step_size,
                             args.eta_min, args.eta_schedule, args.langevin_noise,
-                            args.noise_method, args.noise_scale)
+                            args.noise_method, args.noise_scale,
+                            args.bypass_lambda, args.bypass_gamma, bypass_alpha)
 
         print(f"Train Loss: {train_loss:.6f}  |  Val Loss: {val_loss:.6f}")
 
@@ -520,7 +577,9 @@ def main():
             model, val_ds, device, args.gm_steps, args.gm_step_size,
             args.eta_min, args.eta_schedule, args.langevin_noise,
             args.noise_method, args.noise_scale,
-            eval_plane=20
+            eval_plane=20,
+            bypass_lambda=args.bypass_lambda, bypass_gamma=args.bypass_gamma,
+            bypass_alpha=bypass_alpha
         )
         print(f"Val PSNR (plane 20 avg): {val_psnr:.2f} dB")
 
@@ -554,7 +613,12 @@ def main():
             'sharp_prior': args.sharp_prior,
             'activation': args.activation,
             'sharp_lambda': args.sharp_lambda,
-            'sharp_gamma': args.sharp_gamma
+            'sharp_gamma': args.sharp_gamma,
+            'train_bypass': args.train_bypass,
+            'bypass_lambda': args.bypass_lambda,
+            'bypass_gamma': args.bypass_gamma,
+            'bypass_warmup': args.bypass_warmup,
+            'bypass_ramp': args.bypass_ramp
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:
@@ -582,21 +646,31 @@ def main():
     infer_ds = train_ds if args.single_scene_only else val_ds
     infer_steps = max(args.gm_steps, 50)
     print(f"Auto inference using {'train' if args.single_scene_only else 'val'} dataset ({len(infer_ds)} samples)")
+
+    # Bypass 학습 시 auto-inference에도 bypass 적용 (alpha=1.0)
+    infer_bypass_alpha = 1.0 if args.train_bypass else 0.0
+
     for tag in ['best', 'best_psnr', 'latest']:
         ckpt_path = os.path.join(output_dir, f'{tag}_model.pth' if tag != 'latest' else f'{tag}.pth')
         if os.path.exists(ckpt_path):
             final_generation_check(model, infer_ds, device, output_dir, args,
-                                   ckpt_path, tag, infer_steps)
+                                   ckpt_path, tag, infer_steps,
+                                   bypass_lambda=args.bypass_lambda,
+                                   bypass_gamma=args.bypass_gamma,
+                                   bypass_alpha=infer_bypass_alpha)
 
 
 # ──────────────────────────────────────────────────────────────
 # Final Generation Check (자동 추론)
 # ──────────────────────────────────────────────────────────────
-def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, tag, infer_steps):
+def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, tag, infer_steps,
+                           bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0):
     """체크포인트를 로드하여 대표 focal plane 3장 생성 + 저장"""
     print(f"\n[Final Check - {tag}] Loading {ckpt_path}...")
     print(f"  Using {infer_steps} inference steps (train was {args.gm_steps})")
     print(f"  Eta schedule: {args.eta_schedule}  noise: {args.langevin_noise}  method: {args.noise_method}  scale: {args.noise_scale}")
+    if bypass_alpha > 0:
+        print(f"  Bypass: lambda={bypass_lambda}  gamma={bypass_gamma}  alpha={bypass_alpha:.3f}")
 
     ckpt = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(ckpt['model_state_dict'])
@@ -644,6 +718,12 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
                 pred_grad = torch.autograd.grad(
                     energy, current_image, torch.ones_like(energy)
                 )[0]
+
+                # Stop-gradient bypass
+                if bypass_alpha > 0:
+                    bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                    if bg is not None:
+                        pred_grad = pred_grad + bypass_alpha * bg
 
                 # 추론 시 마지막 스텝에서는 노이즈를 끌어서 깨끗한 결과 보장
                 use_noise = args.langevin_noise and (step < infer_steps - 1)

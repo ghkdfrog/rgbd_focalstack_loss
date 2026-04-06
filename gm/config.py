@@ -71,6 +71,19 @@ def get_parser():
     parser.add_argument('--noise_scale', type=float, default=0.1,
                         help='Noise scale factor for constant_scale method (default: 0.1)')
 
+    # Training-time Bypass (Stop-Gradient Sharp Prior)
+    parser.add_argument('--train_bypass', action='store_true',
+                        help='Enable stop-gradient bypass during training (analytical sharp prior gradient, no autograd graph)')
+    parser.add_argument('--bypass_lambda', type=float, default=5.0,
+                        help='Bypass sharp prior strength (fixed, not learned). Default: 5.0')
+    parser.add_argument('--bypass_gamma', type=float, default=30.0,
+                        help='Bypass CoC decay rate (fixed, not learned). Default: 30.0')
+    parser.add_argument('--bypass_warmup', type=int, default=0,
+                        help='Number of epochs before bypass starts (default: 0)')
+    parser.add_argument('--bypass_ramp', type=int, default=10,
+                        help='Number of epochs to ramp bypass from 0 to full strength (default: 10)')
+
+
     # Dataset
     parser.add_argument('--single_scene_only', action='store_true',
                         help='Only use scene 0 for quick prototyping')
