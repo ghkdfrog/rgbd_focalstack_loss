@@ -49,6 +49,10 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     activation = ckpt.get('activation', 'relu')
     sharp_lambda_init = ckpt.get('sharp_lambda', 10.0)
     sharp_gamma_init = ckpt.get('sharp_gamma', 30.0)
+    # 하위 호환: 기존 sharp_learnable → 둘 다 learnable로 해석
+    old_learnable = ckpt.get('sharp_learnable', False)
+    sharp_lambda_learnable = ckpt.get('sharp_lambda_learnable', old_learnable)
+    sharp_gamma_learnable = ckpt.get('sharp_gamma_learnable', old_learnable)
 
     # 하위 호환: 기존 film_resnet → resnet + use_film=True
     if arch == 'film_resnet':
@@ -62,7 +66,7 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     elif arch == 'resnet':
         model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
     elif arch == 'resnet_film':
-        model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
+        model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, use_sharp_prior=sharp_prior, sharp_lambda_learnable=sharp_lambda_learnable, sharp_gamma_learnable=sharp_gamma_learnable, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
     elif arch == 'resunet':
         model = ResUNet(diopter_mode=diopter_mode, energy_head=energy_head, base_channels=channels, num_bottleneck_blocks=3, use_film=use_film).to(device)
     elif arch == 'convnext':

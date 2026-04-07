@@ -329,13 +329,17 @@ class SimpleResNetFiLM(nn.Module):
     """
     def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
                  num_blocks=4, channels=256, long_skip=False,
-                 use_sharp_prior=False, activation='relu',
+                 use_sharp_prior=False,
+                 sharp_lambda_learnable=False, sharp_gamma_learnable=False,
+                 activation='relu',
                  sharp_lambda_init=10.0, sharp_gamma_init=30.0):
         super(SimpleResNetFiLM, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
         self.long_skip = long_skip
         self.use_sharp_prior = use_sharp_prior
+        self.sharp_lambda_learnable = sharp_lambda_learnable
+        self.sharp_gamma_learnable = sharp_gamma_learnable
         self.activation = activation
 
         act_fn = nn.SiLU() if activation == 'silu' else nn.ReLU()
@@ -360,9 +364,17 @@ class SimpleResNetFiLM(nn.Module):
             self.fc = nn.Linear(channels * 512 * 512, 1)
 
         # Sharp Prior: 초점 영역에서 원본 RGB로 당기는 해석적 이차항
+        # lambda, gamma 각각 learnable / fixed 독립 설정 가능
         if use_sharp_prior:
-            self.sharp_lambda = nn.Parameter(torch.tensor(sharp_lambda_init))
-            self.sharp_gamma = nn.Parameter(torch.tensor(sharp_gamma_init))
+            if sharp_lambda_learnable:
+                self.sharp_lambda = nn.Parameter(torch.tensor(sharp_lambda_init))
+            else:
+                self.register_buffer('sharp_lambda', torch.tensor(sharp_lambda_init))
+
+            if sharp_gamma_learnable:
+                self.sharp_gamma = nn.Parameter(torch.tensor(sharp_gamma_init))
+            else:
+                self.register_buffer('sharp_gamma', torch.tensor(sharp_gamma_init))
 
     def forward(self, x, diopter):
         N, C, H, W = x.shape

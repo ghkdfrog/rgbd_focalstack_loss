@@ -342,7 +342,7 @@ def main():
         # saved_args에서 복원할 키 목록 (학습 설정 전체)
         restore_keys = [
             'arch', 'diopter_mode', 'energy_head', 'channels',
-            'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda', 'sharp_gamma',
+            'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda_learnable', 'sharp_gamma_learnable', 'sharp_lambda', 'sharp_gamma',
             'activation', 'interleave_rate',
             'epochs', 'batch_size', 'lr', 'weight_decay',
             'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise', 'noise_method', 'noise_scale',
@@ -450,6 +450,8 @@ def main():
             channels=args.channels,
             long_skip=args.long_skip,
             use_sharp_prior=args.sharp_prior,
+            sharp_lambda_learnable=args.sharp_lambda_learnable,
+            sharp_gamma_learnable=args.sharp_gamma_learnable,
             activation=args.activation,
             sharp_lambda_init=args.sharp_lambda,
             sharp_gamma_init=args.sharp_gamma
@@ -611,6 +613,8 @@ def main():
             'long_skip': args.long_skip,
             'interleave_rate': args.interleave_rate,
             'sharp_prior': args.sharp_prior,
+            'sharp_lambda_learnable': args.sharp_lambda_learnable,
+            'sharp_gamma_learnable': args.sharp_gamma_learnable,
             'activation': args.activation,
             'sharp_lambda': args.sharp_lambda,
             'sharp_gamma': args.sharp_gamma,
