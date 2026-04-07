@@ -479,6 +479,14 @@ def main():
 
     single_scene_only = saved_args.get('single_scene_only', False)
 
+    # ── Auto-enable infer_sharp if model was trained with bypass ──
+    if saved_args.get('train_bypass', False) and not args.infer_sharp:
+        args.infer_sharp = True
+        args.infer_sharp_lambda = saved_args.get('bypass_lambda', 5.0)
+        args.infer_sharp_gamma = saved_args.get('bypass_gamma', 30.0)
+        print(f"  [AUTO] infer_sharp enabled from train_bypass "
+              f"(lambda={args.infer_sharp_lambda}, gamma={args.infer_sharp_gamma})")
+
     # single_scene_only이면 학습 데이터(train)로 검증, 아니면 test 데이터
     infer_split = 'train' if single_scene_only else 'test'
 
