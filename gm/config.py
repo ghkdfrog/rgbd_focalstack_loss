@@ -20,7 +20,7 @@ def get_parser():
 
     # Model
     parser.add_argument('--arch', type=str, default='simple',
-                        choices=['simple', 'deep', 'stride', 'resnet', 'resnet_film', 'resunet', 'convnext', 'convnext_unet', 'dilated', 'interleave_resnet'],
+                        choices=['simple', 'deep', 'stride', 'resnet', 'resnet_film', 'dwt_resnet_film', 'resunet', 'convnext', 'convnext_unet', 'dilated', 'interleave_resnet'],
                         help='Model architecture')
     parser.add_argument('--diopter_mode', type=str, default='coc',
                         choices=['spatial', 'coc', 'coc_abs', 'coc_signed'],

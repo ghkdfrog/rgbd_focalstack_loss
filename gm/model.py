@@ -429,6 +429,147 @@ class SimpleResNetFiLM(nn.Module):
         return eng
 
 
+# ──────────────────────────────────────────────────────────────
+# Differentiable Haar Wavelet Transform
+# ──────────────────────────────────────────────────────────────
+class HaarDWT(nn.Module):
+    """미분 가능한 Haar Discrete Wavelet Transform.
+
+    입력 (N, C, H, W) → 출력 (N, 4*C, H/2, W/2)
+    채널 순서: [LL, LH, HL, HH] 각각 C 채널씩.
+
+    DWT는 고정된 선형 필터이므로 학습 파라미터 없음.
+    Autograd를 통해 gradient가 완벽하게 역전파됩니다.
+    """
+    def __init__(self):
+        super(HaarDWT, self).__init__()
+
+    def forward(self, x):
+        # x: (N, C, H, W) — H, W는 짝수라고 가정
+        # Polyphase decomposition (stride-2 slicing)
+        x_ll = x[:, :, 0::2, 0::2]  # 짝수행, 짝수열
+        x_lr = x[:, :, 0::2, 1::2]  # 짝수행, 홀수열
+        x_rl = x[:, :, 1::2, 0::2]  # 홀수행, 짝수열
+        x_rr = x[:, :, 1::2, 1::2]  # 홀수행, 홀수열
+
+        # Haar wavelet coefficients
+        LL = (x_ll + x_lr + x_rl + x_rr) * 0.5   # 평균 (Low-Low)
+        LH = (x_ll + x_lr - x_rl - x_rr) * 0.5   # 수평 차이 (Low-High)
+        HL = (x_ll - x_lr + x_rl - x_rr) * 0.5   # 수직 차이 (High-Low)
+        HH = (x_ll - x_lr - x_rl + x_rr) * 0.5   # 대각 차이 (High-High)
+
+        return torch.cat([LL, LH, HL, HH], dim=1)  # (N, 4*C, H/2, W/2)
+
+
+class DWTResNetFiLM(nn.Module):
+    """
+    SimpleResNetFiLM + Haar DWT 입력 변환.
+
+    생성 중인 이미지(3ch)를 모델 내부에서 DWT 변환하여
+    LL/LH/HL/HH (12ch, H/2×W/2) 서브밴드로 분해한 뒤,
+    RGBD 조건(4ch → 다운샘플) + CoC(1ch → 다운샘플)과 합쳐서
+    FiLM ResNet에 입력합니다.
+
+    핵심 아이디어:
+    - HH 서브밴드 = 고주파 텍스처/엣지 정보
+    - FiLM이 CoC≈0 조건에서 HH 값이 살아있는지 확인하도록 학습
+    - Sharp Prior 없이 모델이 스스로 주파수 인식 에너지를 학습
+    - 해상도가 H/2×W/2로 줄어 연산 비용 ~4배 감소
+    - DWT는 선형 연산이므로 autograd gradient가 완벽하게 역전파
+
+    입력 구성 (모델 내부에서 처리):
+        외부에서 받는 x: RGBD(4ch) + predicted(3ch) + [CoC(1ch)] = 7~8ch, H×W
+        DWT 후 내부 입력:
+            - DWT(RGBD) = LL+LH+HL+HH (16ch, H/2×W/2)
+            - DWT(predicted) = LL+LH+HL+HH (12ch, H/2×W/2)
+            = 총 28ch, H/2×W/2
+        FiLM condition: CoC avg_pool2d (1ch, H/2×W/2) — 부드러운 맵이므로 풀링 OK
+    """
+    def __init__(self, input_channels=7, diopter_mode='coc', energy_head='conv1x1',
+                 num_blocks=4, channels=256, long_skip=False,
+                 activation='relu'):
+        super(DWTResNetFiLM, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+        self.long_skip = long_skip
+        self.activation = activation
+
+        act_fn = nn.SiLU() if activation == 'silu' else nn.ReLU()
+        self.act = act_fn
+
+        # DWT 모듈 (학습 파라미터 없음)
+        self.dwt = HaarDWT()
+
+        # 내부 입력 채널: DWT(RGBD 4ch)→16ch + DWT(predicted 3ch)→12ch = 28ch
+        dwt_in_ch = 4 * 4 + 3 * 4  # 28
+
+        # 초기 특징 추출 (H/2 × W/2 해상도에서 동작)
+        self.conv_in = nn.Conv2d(dwt_in_ch, 64, kernel_size=3, stride=1, padding=1)
+        self.conv_expand = nn.Conv2d(64, channels, kernel_size=3, stride=1, padding=1)
+
+        # FiLM Residual Blocks (항상 FiLM 사용)
+        self.res_blocks = nn.ModuleList(
+            [FiLMResidualBlock(channels, activation=activation) for _ in range(num_blocks)]
+        )
+
+        # Energy output head (H/2 × W/2 해상도)
+        if energy_head == 'conv1x1':
+            self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
+        else:  # 'fc' — H/2 × W/2 해상도 기준
+            self.fc = nn.Linear(channels * 256 * 256, 1)
+
+    def forward(self, x, diopter):
+        N, C, H, W = x.shape
+
+        # ── 채널 분리 ──
+        rgbd = x[:, :4, :, :]         # 원본 RGBD (4ch, H×W)
+        y_pred = x[:, 4:7, :, :]      # 생성 중인 이미지 (3ch, H×W)
+
+        # CoC/condition map 추출
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            coc_map = x[:, 7:8, :, :]  # (N, 1, H, W)
+        else:
+            coc_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+
+        # ── DWT: RGBD도 주파수 분해 (원본 HH 보존) ──
+        # rgbd (N, 4, H, W) → (N, 16, H/2, W/2)
+        dwt_rgbd = self.dwt(rgbd)     # [LL(4), LH(4), HL(4), HH(4)]
+
+        # ── DWT: 생성 이미지를 주파수 분해 ──
+        # y_pred (N, 3, H, W) → (N, 12, H/2, W/2)
+        dwt_pred = self.dwt(y_pred)   # [LL(3), LH(3), HL(3), HH(3)]
+
+        # ── CoC 다운샘플 → FiLM condition (부드러운 맵이므로 avg_pool OK) ──
+        cond_map = F.avg_pool2d(coc_map, kernel_size=2, stride=2)  # (N, 1, H/2, W/2)
+
+        # ── 모델 입력: DWT(RGBD)(16) + DWT(pred)(12) = 28ch, H/2×W/2 ──
+        feat = torch.cat([dwt_rgbd, dwt_pred], dim=1)  # (N, 28, H/2, W/2)
+
+        feat = self.act(self.conv_in(feat))
+        feat = self.act(self.conv_expand(feat))
+
+        if self.long_skip:
+            outputs = []
+            for i, block in enumerate(self.res_blocks):
+                if i >= 2:
+                    feat = feat + outputs[i - 2]
+                feat = block(feat, cond_map)
+                outputs.append(feat)
+        else:
+            for block in self.res_blocks:
+                feat = block(feat, cond_map)
+
+        # ── Energy Head (H/2 × W/2 해상도) ──
+        if self.energy_head == 'conv1x1':
+            eng = self.conv_energy(feat)
+            eng = torch.sum(eng, dim=(2, 3))   # (N, 1)
+        else:  # 'fc'
+            eng = torch.flatten(feat, 1)
+            eng = self.fc(eng)                  # (N, 1)
+
+        return eng
+
+
 class ConvNeXtBlock(nn.Module):
     """
     ConvNeXt Block (A ConvNet for the 2020s, CVPR 2022).

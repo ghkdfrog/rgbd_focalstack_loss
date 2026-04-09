@@ -25,7 +25,7 @@ from tqdm import tqdm
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, save_model_architecture
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, DWTResNetFiLM, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, save_model_architecture
 from gm.config import parse_args, get_parser
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
@@ -470,6 +470,16 @@ def main():
             activation=args.activation,
             sharp_lambda_init=args.sharp_lambda,
             sharp_gamma_init=args.sharp_gamma
+        ).to(device)
+    elif args.arch == 'dwt_resnet_film':
+        model = DWTResNetFiLM(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head,
+            num_blocks=4,
+            channels=args.channels,
+            long_skip=args.long_skip,
+            activation=args.activation
         ).to(device)
     elif args.arch == 'resunet':
         model = ResUNet(
