@@ -117,7 +117,7 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                        eta_min=0.002, eta_schedule='constant', use_langevin_noise=False,
                        noise_method='constant_scale', noise_scale=0.1,
                        infer_sharp=False, infer_sharp_lambda=5.0,
-                       infer_sharp_gamma=30.0, infer_sharp_start=0.5):
+                       infer_sharp_gamma=30.0, infer_sharp_start=0.5, use_amp=False):
     """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR/energy를 반환
 
     infer_sharp: True이면 inference-time sharpening 적용
@@ -146,22 +146,23 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
             eta = get_eta(step, gm_steps, gm_step_size, eta_min, eta_schedule)
             current_image.requires_grad_(True)
 
-            input_rgbd = x[:, :4, :, :]
-            if C > 7:
-                input_tail = x[:, 7:, :, :]
-                model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
-            else:
-                model_input = torch.cat([input_rgbd, current_image], dim=1)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                input_rgbd = x[:, :4, :, :]
+                if C > 7:
+                    input_tail = x[:, 7:, :, :]
+                    model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
+                else:
+                    model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-            energy = model(model_input, diopter)
-            energy_val = energy.item()  # 모델 출력(에너지) 스칼라 값 기록
+                energy = model(model_input, diopter)
+                energy_val = energy.item()  # 모델 출력(에너지) 스칼라 값 기록
 
-            grad = torch.autograd.grad(
-                outputs=energy,
-                inputs=current_image,
-                grad_outputs=torch.ones_like(energy),
-                create_graph=False
-            )[0]
+                grad = torch.autograd.grad(
+                    outputs=energy,
+                    inputs=current_image,
+                    grad_outputs=torch.ones_like(energy),
+                    create_graph=False
+                )[0]
 
             # ── Inference-time Sharpening ──
             # 해석적 gradient: ∇E_sharp/∂y = -λ · w(coc) · (y - rgb)
@@ -331,13 +332,20 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
                           ds, plane_indices, gm_steps, gm_step_size,
                           eta_min, eta_schedule, langevin_noise,
                           noise_method='constant_scale', noise_scale=0.1,
-                          channels=256, use_film=False, long_skip=False, interleave_rate=2):
+                          channels=256, use_film=False, long_skip=False, interleave_rate=2, use_amp=False):
     """하나의 체크포인트 태그에 대해 추론 실행"""
     diopter_mode = saved_args.get('diopter_mode', 'coc')
     energy_head = saved_args.get('energy_head', 'fc')
     arch = saved_args.get('arch', 'simple')
 
     model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels, use_film=use_film, long_skip=long_skip, interleave_rate=interleave_rate)
+
+    if args.compile:
+        print(f"  Applying torch.compile(mode={args.compile_mode})...")
+        try:
+            model = torch.compile(model, mode=args.compile_mode)
+        except Exception as e:
+            print(f"  Warning: torch.compile failed: {e}")
 
     print(f"\n{'='*50}")
     print(f"  [{tag}] epoch={ckpt_epoch}")
@@ -395,7 +403,7 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
             model, x, diopter, gt, device, gm_steps, gm_step_size,
             eta_min, eta_schedule, langevin_noise, noise_method, noise_scale,
             infer_sharp=args.infer_sharp, infer_sharp_lambda=args.infer_sharp_lambda,
-            infer_sharp_gamma=args.infer_sharp_gamma, infer_sharp_start=args.infer_sharp_start
+            infer_sharp_gamma=args.infer_sharp_gamma, infer_sharp_start=args.infer_sharp_start, use_amp=use_amp
         )
 
         all_step_data[p_idx] = step_psnr_history
@@ -515,6 +523,8 @@ def main():
         print(f"    lambda     : {args.infer_sharp_lambda}")
         print(f"    gamma      : {args.infer_sharp_gamma}")
         print(f"    start      : {args.infer_sharp_start} ({int(gm_steps * args.infer_sharp_start)}/{gm_steps} step)")
+    print(f"  compile      : {args.compile} (mode: {args.compile_mode})")
+    print(f"  amp          : {args.amp}")
     print(f"{'='*50}\n")
 
     # 데이터셋
@@ -549,7 +559,7 @@ def main():
             ds, plane_indices, gm_steps, gm_step_size,
             eta_min, eta_schedule, langevin_noise,
             noise_method, noise_scale,
-            channels=channels, use_film=use_film, long_skip=long_skip, interleave_rate=interleave_rate
+            channels=channels, use_film=use_film, long_skip=long_skip, interleave_rate=interleave_rate, use_amp=args.amp
         )
         all_summaries[tag] = {
             'avg_psnr': avg_psnr,

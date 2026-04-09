@@ -112,7 +112,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 gm_steps, gm_step_size, eta_min=0.002,
                 eta_schedule='constant', langevin_noise=False,
                 noise_method='constant_scale', noise_scale=0.1,
-                bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0):
+                bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0,
+                scaler=None, use_amp=False):
     model.train()
     total_loss = 0.0
     n = 0
@@ -136,38 +137,48 @@ def train_epoch(model, loader, optimizer, device, epoch,
             eta = get_eta(step, gm_steps, gm_step_size, eta_min, eta_schedule)
             current_image.requires_grad_(True)
 
-            # 모델 입력 조립: RGBD(4ch) + 생성중인 이미지(3ch) + [CoC(1ch)]
-            input_rgbd = x[:, :4, :, :]
-            if C > 7:
-                input_tail = x[:, 7:, :, :]
-                model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                # 모델 입력 조립: RGBD(4ch) + 생성중인 이미지(3ch) + [CoC(1ch)]
+                input_rgbd = x[:, :4, :, :]
+                if C > 7:
+                    input_tail = x[:, 7:, :, :]
+                    model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
+                else:
+                    model_input = torch.cat([input_rgbd, current_image], dim=1)
+
+                energy = model(model_input, diopter)
+
+                pred_grad = torch.autograd.grad(
+                    outputs=energy,
+                    inputs=current_image,
+                    grad_outputs=torch.ones_like(energy),
+                    create_graph=True
+                )[0]
+
+                # Stop-gradient bypass: analytical sharp prior gradient
+                if bypass_alpha > 0:
+                    bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                    if bg is not None:
+                        pred_grad = pred_grad + bypass_alpha * bg
+
+                gt_grad = gt - current_image
+                loss = F.mse_loss(pred_grad, gt_grad)
+                
+            if use_amp and scaler is not None:
+                scaler.scale(loss).backward()
             else:
-                model_input = torch.cat([input_rgbd, current_image], dim=1)
-
-            energy = model(model_input, diopter)
-
-            pred_grad = torch.autograd.grad(
-                outputs=energy,
-                inputs=current_image,
-                grad_outputs=torch.ones_like(energy),
-                create_graph=True
-            )[0]
-
-            # Stop-gradient bypass: analytical sharp prior gradient
-            if bypass_alpha > 0:
-                bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
-                if bg is not None:
-                    pred_grad = pred_grad + bypass_alpha * bg
-
-            gt_grad = gt - current_image
-            loss = F.mse_loss(pred_grad, gt_grad)
-            loss.backward()
+                loss.backward()
+                
             batch_loss += loss.item()
 
             current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
                                           noise_method, noise_scale)
 
-        optimizer.step()
+        if use_amp and scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
         avg_step_loss = batch_loss / gm_steps
         total_loss += avg_step_loss * N
         n += N
@@ -183,7 +194,7 @@ def train_epoch(model, loader, optimizer, device, epoch,
 def validate(model, loader, device, gm_steps, gm_step_size,
             eta_min=0.002, eta_schedule='constant', langevin_noise=False,
             noise_method='constant_scale', noise_scale=0.1,
-            bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0):
+            bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0, use_amp=False):
     model.eval()
     total_loss = 0.0
     n = 0
@@ -204,30 +215,32 @@ def validate(model, loader, device, gm_steps, gm_step_size,
                 eta = get_eta(step, gm_steps, gm_step_size, eta_min, eta_schedule)
                 current_image.requires_grad_(True)
 
-                input_rgbd = x[:, :4, :, :]
-                if C > 7:
-                    input_tail = x[:, 7:, :, :]
-                    model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
-                else:
-                    model_input = torch.cat([input_rgbd, current_image], dim=1)
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    input_rgbd = x[:, :4, :, :]
+                    if C > 7:
+                        input_tail = x[:, 7:, :, :]
+                        model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
+                    else:
+                        model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-                energy = model(model_input, diopter)
+                    energy = model(model_input, diopter)
 
-                pred_grad = torch.autograd.grad(
-                    outputs=energy,
-                    inputs=current_image,
-                    grad_outputs=torch.ones_like(energy),
-                    create_graph=False
-                )[0]
+                    pred_grad = torch.autograd.grad(
+                        outputs=energy,
+                        inputs=current_image,
+                        grad_outputs=torch.ones_like(energy),
+                        create_graph=False
+                    )[0]
 
-                # Stop-gradient bypass
-                if bypass_alpha > 0:
-                    bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
-                    if bg is not None:
-                        pred_grad = pred_grad + bypass_alpha * bg
+                    # Stop-gradient bypass
+                    if bypass_alpha > 0:
+                        bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                        if bg is not None:
+                            pred_grad = pred_grad + bypass_alpha * bg
 
-                gt_grad = gt - current_image
-                loss = F.mse_loss(pred_grad, gt_grad)
+                    gt_grad = gt - current_image
+                    loss = F.mse_loss(pred_grad, gt_grad)
+                
                 batch_loss += loss.item()
 
                 current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
@@ -248,7 +261,7 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                     eta_min=0.002, eta_schedule='constant', langevin_noise=False,
                     noise_method='constant_scale', noise_scale=0.1,
                     eval_plane=20,
-                    bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0):
+                    bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0, use_amp=False):
     """Val set의 모든 scene에 대해 특정 plane을 생성하고 평균 PSNR을 반환.
     
     val_loss와 달리 실제 이미지 생성 품질을 측정하므로,
@@ -281,24 +294,26 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
             for step in range(gm_steps):
                 eta = get_eta(step, gm_steps, gm_step_size, eta_min, eta_schedule)
                 current_image.requires_grad_(True)
-                input_rgbd = x[:, :4, :, :]
-                if C > 7:
-                    input_tail = x[:, 7:, :, :]
-                    model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
-                else:
-                    model_input = torch.cat([input_rgbd, current_image], dim=1)
+                
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    input_rgbd = x[:, :4, :, :]
+                    if C > 7:
+                        input_tail = x[:, 7:, :, :]
+                        model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
+                    else:
+                        model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-                energy = model(model_input, diopter)
-                pred_grad = torch.autograd.grad(
-                    energy, current_image, torch.ones_like(energy),
-                    create_graph=False
-                )[0]
+                    energy = model(model_input, diopter)
+                    pred_grad = torch.autograd.grad(
+                        energy, current_image, torch.ones_like(energy),
+                        create_graph=False
+                    )[0]
 
-                # Stop-gradient bypass
-                if bypass_alpha > 0:
-                    bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
-                    if bg is not None:
-                        pred_grad = pred_grad + bypass_alpha * bg
+                    # Stop-gradient bypass
+                    if bypass_alpha > 0:
+                        bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                        if bg is not None:
+                            pred_grad = pred_grad + bypass_alpha * bg
 
                 use_noise = langevin_noise and (step < gm_steps - 1)
                 current_image = langevin_step(current_image, pred_grad, eta, use_noise,
@@ -525,6 +540,16 @@ def main():
         start_epoch = ckpt.get('epoch', 0) + 1
         print(f"Resumed from {args.resume} (epoch {start_epoch})")
 
+    # ── Compile the model after loading weights ──
+    if args.compile:
+        print(f"Applying torch.compile(mode={args.compile_mode})...")
+        try:
+            model = torch.compile(model, mode=args.compile_mode)
+        except Exception as e:
+            print(f"Warning: torch.compile failed with error: {e}. Proceeding without compilation.")
+
+    scaler = torch.cuda.amp.GradScaler(enabled=args.amp)
+
     optimizer = optim.Adam(model.parameters(), lr=args.lr,
                            weight_decay=args.weight_decay)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -566,11 +591,12 @@ def main():
                                  device, epoch, args.gm_steps, args.gm_step_size,
                                  args.eta_min, args.eta_schedule, args.langevin_noise,
                                  args.noise_method, args.noise_scale,
-                                 args.bypass_lambda, args.bypass_gamma, bypass_alpha)
+                                 args.bypass_lambda, args.bypass_gamma, bypass_alpha,
+                                 scaler=scaler, use_amp=args.amp)
         val_loss = validate(model, val_loader, device, args.gm_steps, args.gm_step_size,
                             args.eta_min, args.eta_schedule, args.langevin_noise,
                             args.noise_method, args.noise_scale,
-                            args.bypass_lambda, args.bypass_gamma, bypass_alpha)
+                            args.bypass_lambda, args.bypass_gamma, bypass_alpha, use_amp=args.amp)
 
         print(f"Train Loss: {train_loss:.6f}  |  Val Loss: {val_loss:.6f}")
 
@@ -581,7 +607,7 @@ def main():
             args.noise_method, args.noise_scale,
             eval_plane=20,
             bypass_lambda=args.bypass_lambda, bypass_gamma=args.bypass_gamma,
-            bypass_alpha=bypass_alpha
+            bypass_alpha=bypass_alpha, use_amp=args.amp
         )
         print(f"Val PSNR (plane 20 avg): {val_psnr:.2f} dB")
 
@@ -593,9 +619,14 @@ def main():
         scheduler.step(val_loss)
 
         # ── Checkpoint ──
+        state_dict = model.state_dict()
+        # Remove _orig_mod. prefix if compiled
+        if args.compile:
+            state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
+
         ckpt = {
             'epoch': epoch,
-            'model_state_dict': model.state_dict(),
+            'model_state_dict': state_dict,
             'optimizer_state_dict': optimizer.state_dict(),
             'arch': args.arch,
             'diopter_mode': args.diopter_mode,
@@ -661,14 +692,13 @@ def main():
                                    ckpt_path, tag, infer_steps,
                                    bypass_lambda=args.bypass_lambda,
                                    bypass_gamma=args.bypass_gamma,
-                                   bypass_alpha=infer_bypass_alpha)
-
+                                   bypass_alpha=infer_bypass_alpha, use_amp=args.amp)
 
 # ──────────────────────────────────────────────────────────────
 # Final Generation Check (자동 추론)
 # ──────────────────────────────────────────────────────────────
 def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, tag, infer_steps,
-                           bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0):
+                           bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0, use_amp=False):
     """체크포인트를 로드하여 대표 focal plane 3장 생성 + 저장"""
     print(f"\n[Final Check - {tag}] Loading {ckpt_path}...")
     print(f"  Using {infer_steps} inference steps (train was {args.gm_steps})")
@@ -711,23 +741,25 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
                 eta = get_eta(step, infer_steps, args.gm_step_size,
                               args.eta_min, args.eta_schedule)
                 current_image.requires_grad_(True)
-                input_rgbd = x[:, :4, :, :]
-                if C > 7:
-                    input_tail = x[:, 7:, :, :]
-                    model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
-                else:
-                    model_input = torch.cat([input_rgbd, current_image], dim=1)
+                
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    input_rgbd = x[:, :4, :, :]
+                    if C > 7:
+                        input_tail = x[:, 7:, :, :]
+                        model_input = torch.cat([input_rgbd, current_image, input_tail], dim=1)
+                    else:
+                        model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-                energy = model(model_input, diopter)
-                pred_grad = torch.autograd.grad(
-                    energy, current_image, torch.ones_like(energy)
-                )[0]
+                    energy = model(model_input, diopter)
+                    pred_grad = torch.autograd.grad(
+                        energy, current_image, torch.ones_like(energy)
+                    )[0]
 
-                # Stop-gradient bypass
-                if bypass_alpha > 0:
-                    bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
-                    if bg is not None:
-                        pred_grad = pred_grad + bypass_alpha * bg
+                    # Stop-gradient bypass
+                    if bypass_alpha > 0:
+                        bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                        if bg is not None:
+                            pred_grad = pred_grad + bypass_alpha * bg
 
                 # 추론 시 마지막 스텝에서는 노이즈를 끌어서 깨끗한 결과 보장
                 use_noise = args.langevin_noise and (step < infer_steps - 1)

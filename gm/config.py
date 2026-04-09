@@ -50,6 +50,15 @@ def get_parser():
                         choices=['relu', 'silu'],
                         help='Activation function: relu (default) or silu')
 
+    # Execution optimization
+    parser.add_argument('--compile', action='store_true',
+                        help='Enable torch.compile for model')
+    parser.add_argument('--compile_mode', type=str, default='reduce-overhead',
+                        choices=['default', 'reduce-overhead', 'max-autotune'],
+                        help='torch.compile mode')
+    parser.add_argument('--amp', action='store_true',
+                        help='Enable Automatic Mixed Precision (AMP)')
+
     # Training
     parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--batch_size', type=int, default=1)
