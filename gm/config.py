@@ -96,6 +96,17 @@ def get_parser():
     parser.add_argument('--bypass_ramp', type=int, default=10,
                         help='Number of epochs to ramp bypass from 0 to full strength (default: 10)')
 
+    # Energy Regularization
+    parser.add_argument('--enable_energy_dist', action='store_true',
+                        help='Enable E(current) ≈ -0.5·scale·mean(|current-GT|²) distance loss')
+    parser.add_argument('--weight_energy_dist', type=float, default=0.01,
+                        help='Weight for energy distance loss (default: 0.01)')
+    parser.add_argument('--energy_dist_scale', type=float, default=1.0,
+                        help='Scale constant for target energy: -0.5·scale·mean(|x-gt|²) (default: 1.0)')
+    parser.add_argument('--enable_energy_anchor', action='store_true',
+                        help='Enable E(GT)²→0 anchor loss')
+    parser.add_argument('--weight_energy_anchor', type=float, default=0.01,
+                        help='Weight for energy anchor loss (default: 0.01)')
 
     # Dataset
     parser.add_argument('--single_scene_only', action='store_true',

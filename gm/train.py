@@ -113,9 +113,14 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 eta_schedule='constant', langevin_noise=False,
                 noise_method='constant_scale', noise_scale=0.1,
                 bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0,
-                scaler=None, use_amp=False):
+                scaler=None, use_amp=False,
+                enable_energy_dist=False, weight_energy_dist=0.01, energy_dist_scale=1.0,
+                enable_energy_anchor=False, weight_energy_anchor=0.01):
     model.train()
     total_loss = 0.0
+    total_traj = 0.0
+    total_edist = 0.0
+    total_eanchor = 0.0
     n = 0
 
     pbar = tqdm(loader, desc=f'Epoch {epoch} [train]', leave=False, dynamic_ncols=True)
@@ -130,7 +135,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
 
         # 1. 랜덤 노이즈에서 시작
         current_image = torch.randn_like(gt).to(device)
-        batch_loss = 0.0
+        batch_traj = 0.0
+        batch_edist = 0.0
 
         # 2. Trajectory steps
         for step in range(gm_steps):
@@ -162,29 +168,72 @@ def train_epoch(model, loader, optimizer, device, epoch,
                         pred_grad = pred_grad + bypass_alpha * bg
 
                 gt_grad = gt - current_image
-                loss = F.mse_loss(pred_grad, gt_grad)
-                
+                loss_traj = F.mse_loss(pred_grad, gt_grad)
+
+                # Energy Distance Loss: E(current) ≈ -0.5 · scale · mean(|current - gt|²)
+                loss_edist_step = torch.tensor(0.0, device=device)
+                if enable_energy_dist:
+                    with torch.no_grad():
+                        target_eng = -0.5 * energy_dist_scale * torch.sum(
+                            (current_image.detach() - gt) ** 2, dim=(1, 2, 3)
+                        ).unsqueeze(1)  # (N, 1)
+                    loss_edist_step = weight_energy_dist * F.mse_loss(energy, target_eng)
+
+                loss = loss_traj + loss_edist_step
+
             if use_amp and scaler is not None:
                 scaler.scale(loss).backward()
             else:
                 loss.backward()
-                
-            batch_loss += loss.item()
+
+            batch_traj += loss_traj.item()
+            batch_edist += loss_edist_step.item()
 
             current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
                                           noise_method, noise_scale)
+
+        # 3. Energy Anchor Loss: E(GT) → 0 (궤적 루프 바깥, optimizer.step 전)
+        batch_eanchor = 0.0
+        if enable_energy_anchor:
+            with torch.cuda.amp.autocast(enabled=use_amp):
+                input_rgbd = x[:, :4, :, :]
+                if C > 7:
+                    input_tail = x[:, 7:, :, :]
+                    gt_model_input = torch.cat([input_rgbd, gt, input_tail], dim=1)
+                else:
+                    gt_model_input = torch.cat([input_rgbd, gt], dim=1)
+                energy_gt = model(gt_model_input, diopter)
+                loss_eanchor = weight_energy_anchor * F.mse_loss(energy_gt, torch.zeros_like(energy_gt))
+
+            if use_amp and scaler is not None:
+                scaler.scale(loss_eanchor).backward()
+            else:
+                loss_eanchor.backward()
+            batch_eanchor = loss_eanchor.item()
 
         if use_amp and scaler is not None:
             scaler.step(optimizer)
             scaler.update()
         else:
             optimizer.step()
-        avg_step_loss = batch_loss / gm_steps
-        total_loss += avg_step_loss * N
-        n += N
-        pbar.set_postfix(loss=f'{avg_step_loss:.4f}')
 
-    return total_loss / max(n, 1)
+        avg_traj = batch_traj / gm_steps
+        avg_edist = batch_edist / gm_steps
+        avg_total = avg_traj + avg_edist + batch_eanchor
+
+        total_traj += avg_traj * N
+        total_edist += avg_edist * N
+        total_eanchor += batch_eanchor * N
+        total_loss += avg_total * N
+        n += N
+        pbar.set_postfix(loss=f'{avg_total:.4f}')
+
+    return {
+        'total': total_loss / max(n, 1),
+        'traj': total_traj / max(n, 1),
+        'edist': total_edist / max(n, 1),
+        'eanchor': total_eanchor / max(n, 1),
+    }
 
 
 # ──────────────────────────────────────────────────────────────
@@ -362,6 +411,7 @@ def main():
             'epochs', 'batch_size', 'lr', 'weight_decay',
             'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise', 'noise_method', 'noise_scale',
             'train_bypass', 'bypass_lambda', 'bypass_gamma', 'bypass_warmup', 'bypass_ramp',
+            'enable_energy_dist', 'weight_energy_dist', 'energy_dist_scale', 'enable_energy_anchor', 'weight_energy_anchor',
             'single_scene_only', 'num_scenes', 'unmatch_ratio', 'save_every',
             'data_dir', 'generated_data_dir', 'output_dir'
         ]
@@ -597,12 +647,18 @@ def main():
             shuffle=True, num_workers=args.num_workers
         )
 
-        train_loss = train_epoch(model, train_loader, optimizer,
-                                 device, epoch, args.gm_steps, args.gm_step_size,
-                                 args.eta_min, args.eta_schedule, args.langevin_noise,
-                                 args.noise_method, args.noise_scale,
-                                 args.bypass_lambda, args.bypass_gamma, bypass_alpha,
-                                 scaler=scaler, use_amp=args.amp)
+        train_losses = train_epoch(model, train_loader, optimizer,
+                                   device, epoch, args.gm_steps, args.gm_step_size,
+                                   args.eta_min, args.eta_schedule, args.langevin_noise,
+                                   args.noise_method, args.noise_scale,
+                                   args.bypass_lambda, args.bypass_gamma, bypass_alpha,
+                                   scaler=scaler, use_amp=args.amp,
+                                   enable_energy_dist=args.enable_energy_dist,
+                                   weight_energy_dist=args.weight_energy_dist,
+                                   energy_dist_scale=args.energy_dist_scale,
+                                   enable_energy_anchor=args.enable_energy_anchor,
+                                   weight_energy_anchor=args.weight_energy_anchor)
+        train_loss = train_losses['total']
         val_loss = validate(model, val_loader, device, args.gm_steps, args.gm_step_size,
                             args.eta_min, args.eta_schedule, args.langevin_noise,
                             args.noise_method, args.noise_scale,
@@ -622,7 +678,10 @@ def main():
         print(f"Val PSNR (plane 20 avg): {val_psnr:.2f} dB")
 
         if writer:
-            writer.add_scalar('train/loss', train_loss, epoch)
+            writer.add_scalar('train/loss_total', train_losses['total'], epoch)
+            writer.add_scalar('train/loss_traj', train_losses['traj'], epoch)
+            writer.add_scalar('train/loss_edist', train_losses['edist'], epoch)
+            writer.add_scalar('train/loss_eanchor', train_losses['eanchor'], epoch)
             writer.add_scalar('val/loss', val_loss, epoch)
             writer.add_scalar('val/psnr', val_psnr, epoch)
 
