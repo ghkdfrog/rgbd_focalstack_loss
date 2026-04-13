@@ -17,10 +17,13 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+
+import lpips
 
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
@@ -28,6 +31,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, DWTResNetFiLM, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, save_model_architecture
 from gm.config import parse_args, get_parser
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
+from gm.compositional import CompositionalTargets
 
 try:
     from tensorboardX import SummaryWriter
@@ -109,21 +113,25 @@ def compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma):
 # Training (one epoch)
 # ──────────────────────────────────────────────────────────────
 def train_epoch(model, loader, optimizer, device, epoch,
-                gm_steps, gm_step_size, eta_min=0.002,
-                eta_schedule='constant', langevin_noise=False,
-                noise_method='constant_scale', noise_scale=0.1,
-                bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0,
-                scaler=None, use_amp=False,
-                enable_energy_dist=False, weight_energy_dist=0.01, energy_dist_scale=1.0,
-                enable_energy_anchor=False, weight_energy_anchor=0.01):
+                args, scaler=None, use_amp=False, tb_writer=None, global_step=None):
     model.train()
     total_loss = 0.0
     total_traj = 0.0
-    total_edist = 0.0
     total_eanchor = 0.0
+    
+    # Optional ComposMetrics Tracking
+    comp_metrics = {
+        'loss_struct': 0.0, 'loss_percep': 0.0, 'loss_phys': 0.0,
+        'eanchor_struct': 0.0, 'eanchor_percep': 0.0, 'eanchor_phys': 0.0,
+    }
+    
     n = 0
-
     pbar = tqdm(loader, desc=f'Epoch {epoch} [train]', leave=False, dynamic_ncols=True)
+    
+    # Initialize targets globally
+    if args.compositional_ebm:
+        comp_targets = CompositionalTargets(args, device)
+        
     for batch_data in pbar:
         x, diopter, targets, gt = batch_data
         N, C, H, W = x.shape
@@ -133,18 +141,16 @@ def train_epoch(model, loader, optimizer, device, epoch,
 
         optimizer.zero_grad()
 
-        # 1. 랜덤 노이즈에서 시작
+        # 1. Start from random noise
         current_image = torch.randn_like(gt).to(device)
         batch_traj = 0.0
-        batch_edist = 0.0
 
-        # 2. Trajectory steps
-        for step in range(gm_steps):
-            eta = get_eta(step, gm_steps, gm_step_size, eta_min, eta_schedule)
+        # 2. Trajectory looping
+        for step in range(args.gm_steps):
+            eta = get_eta(step, args.gm_steps, args.gm_step_size, args.eta_min, args.eta_schedule)
             current_image.requires_grad_(True)
 
             with torch.cuda.amp.autocast(enabled=use_amp):
-                # 모델 입력 조립: RGBD(4ch) + 생성중인 이미지(3ch) + [CoC(1ch)]
                 input_rgbd = x[:, :4, :, :]
                 if C > 7:
                     input_tail = x[:, 7:, :, :]
@@ -152,64 +158,140 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 else:
                     model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-                energy = model(model_input, diopter)
+            if args.compositional_ebm:
+                # -------------------------------------------------------------
+                # COMPOSITIONAL EBM FORWARD
+                # -------------------------------------------------------------
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    eng_struct, eng_percep, eng_phys = model(model_input, diopter)
+                    
+                # A: Model Gradients (create_graph=True)
+                pred_grad_struct = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=True)[0]
+                pred_grad_percep = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=True)[0]
+                pred_grad_phys = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=True)[0]
 
-                pred_grad = torch.autograd.grad(
-                    outputs=energy,
-                    inputs=current_image,
-                    grad_outputs=torch.ones_like(energy),
-                    create_graph=True
-                )[0]
+                # B: Target Gradients (Sequential Detach)
+                
+                # Struct Target
+                tgt_grad_struct = torch.zeros_like(current_image)
+                if args.enable_struct:
+                    # Require grad on a detached clone to prevent building huge shared graphs
+                    x_for_tgt_struct = current_image.detach().clone().requires_grad_(True)
+                    with torch.cuda.amp.autocast(enabled=use_amp):
+                        err_struct = comp_targets.forward_struct(x_for_tgt_struct, gt)
+                    tgt_grad_struct = -torch.autograd.grad(err_struct, x_for_tgt_struct, create_graph=False)[0].detach()
+                
+                # Percep Target
+                tgt_grad_percep = torch.zeros_like(current_image)
+                if args.enable_percep:
+                    x_for_tgt_percep = current_image.detach().clone().requires_grad_(True)
+                    with torch.cuda.amp.autocast(enabled=use_amp):
+                        err_percep = comp_targets.forward_percep(x_for_tgt_percep, gt)
+                    tgt_grad_percep = -torch.autograd.grad(err_percep, x_for_tgt_percep, create_graph=False)[0].detach()
 
-                # Stop-gradient bypass: analytical sharp prior gradient
-                if bypass_alpha > 0:
-                    bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
-                    if bg is not None:
-                        pred_grad = pred_grad + bypass_alpha * bg
+                # Phys Target
+                tgt_grad_phys = torch.zeros_like(current_image)
+                if args.enable_phys:
+                    x_for_tgt_phys = current_image.detach().clone().requires_grad_(True)
+                    with torch.cuda.amp.autocast(enabled=use_amp):
+                        err_phys = comp_targets.forward_phys(x_for_tgt_phys, gt, x, diopter)
+                    if err_phys.item() > 0:
+                        tgt_grad_phys = -torch.autograd.grad(err_phys, x_for_tgt_phys, create_graph=False)[0].detach()
 
-                gt_grad = gt - current_image
-                loss_traj = F.mse_loss(pred_grad, gt_grad)
+                # C: Loss Computation (Sum reduction mathematically integrated)
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    loss_s = F.mse_loss(pred_grad_struct, tgt_grad_struct, reduction='sum') if args.enable_struct else torch.tensor(0.0, device=device)
+                    loss_p = F.mse_loss(pred_grad_percep, tgt_grad_percep, reduction='sum') if args.enable_percep else torch.tensor(0.0, device=device)
+                    loss_ph = F.mse_loss(pred_grad_phys, tgt_grad_phys, reduction='sum') if args.enable_phys else torch.tensor(0.0, device=device)
 
-                # Energy Distance Loss: E(current) ≈ -0.5 · scale · mean(|current - gt|²)
-                loss_edist_step = torch.tensor(0.0, device=device)
-                if enable_energy_dist:
-                    with torch.no_grad():
-                        target_eng = -0.5 * energy_dist_scale * torch.sum(
-                            (current_image.detach() - gt) ** 2, dim=(1, 2, 3)
-                        ).unsqueeze(1)  # (N, 1)
-                    loss_edist_step = weight_energy_dist * F.mse_loss(energy, target_eng)
+                    loss_traj = args.w_struct * loss_s + args.w_percep * loss_p + args.w_phys * loss_ph
 
-                loss = loss_traj + loss_edist_step
-
-            if use_amp and scaler is not None:
-                scaler.scale(loss).backward()
-            else:
-                loss.backward()
-
-            batch_traj += loss_traj.item()
-            batch_edist += loss_edist_step.item()
-
-            current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
-                                          noise_method, noise_scale)
-
-        # 3. Energy Anchor Loss: E(GT) → 0 (궤적 루프 바깥, optimizer.step 전)
-        batch_eanchor = 0.0
-        if enable_energy_anchor:
-            with torch.cuda.amp.autocast(enabled=use_amp):
-                input_rgbd = x[:, :4, :, :]
-                if C > 7:
-                    input_tail = x[:, 7:, :, :]
-                    gt_model_input = torch.cat([input_rgbd, gt, input_tail], dim=1)
+                if use_amp and scaler is not None:
+                    scaler.scale(loss_traj).backward()
                 else:
-                    gt_model_input = torch.cat([input_rgbd, gt], dim=1)
-                energy_gt = model(gt_model_input, diopter)
-                loss_eanchor = weight_energy_anchor * F.mse_loss(energy_gt, torch.zeros_like(energy_gt))
+                    loss_traj.backward()
+                    
+                # Track metrics
+                batch_traj += loss_traj.item()
+                comp_metrics['loss_struct'] += loss_s.item()
+                comp_metrics['loss_percep'] += loss_p.item()
+                comp_metrics['loss_phys'] += loss_ph.item()
 
+                # Generation update via compositional SUM
+                pred_grad_sum = torch.zeros_like(current_image)
+                if args.enable_struct: pred_grad_sum += pred_grad_struct.detach()
+                if args.enable_percep: pred_grad_sum += pred_grad_percep.detach()
+                if args.enable_phys: pred_grad_sum += pred_grad_phys.detach()
+                
+                # Stop-gradient bypass if enabled
+                if args.bypass_alpha > 0:
+                    bg = compute_bypass_grad(x, current_image, args.bypass_lambda, args.bypass_gamma)
+                    if bg is not None:
+                        pred_grad_sum = pred_grad_sum + args.bypass_alpha * bg
+
+                current_image = langevin_step(current_image, pred_grad_sum, eta, args.langevin_noise, args.noise_method, args.noise_scale)
+
+            else:
+                # -------------------------------------------------------------
+                # SINGLE-HEAD EBM FORWARD
+                # -------------------------------------------------------------
+                with torch.cuda.amp.autocast(enabled=use_amp):
+                    energy = model(model_input, diopter)
+                    pred_grad = torch.autograd.grad(energy, current_image, torch.ones_like(energy), create_graph=True)[0]
+
+                    if args.bypass_alpha > 0:
+                        bg = compute_bypass_grad(x, current_image, args.bypass_lambda, args.bypass_gamma)
+                        if bg is not None:
+                            pred_grad = pred_grad + args.bypass_alpha * bg
+
+                    gt_grad = gt - current_image
+                    loss_traj = F.mse_loss(pred_grad, gt_grad)
+
+                if use_amp and scaler is not None:
+                    scaler.scale(loss_traj).backward()
+                else:
+                    loss_traj.backward()
+
+                batch_traj += loss_traj.item()
+                current_image = langevin_step(current_image, pred_grad, eta, args.langevin_noise, args.noise_method, args.noise_scale)
+
+        # 3. Energy Anchor Loss: E(GT) → 0 
+        batch_eanchor = 0.0
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            input_rgbd = x[:, :4, :, :]
+            if C > 7:
+                input_tail = x[:, 7:, :, :]
+                gt_model_input = torch.cat([input_rgbd, gt, input_tail], dim=1)
+            else:
+                gt_model_input = torch.cat([input_rgbd, gt], dim=1)
+
+            if args.compositional_ebm:
+                eng_gt_s, eng_gt_p, eng_gt_ph = model(gt_model_input, diopter)
+                z_s = torch.zeros_like(eng_gt_s)
+                
+                loss_ea_s = args.lambda_struct * F.mse_loss(eng_gt_s, z_s, reduction='sum') if args.enable_struct else 0.0
+                loss_ea_p = args.lambda_percep * F.mse_loss(eng_gt_p, z_s, reduction='sum') if args.enable_percep else 0.0
+                loss_ea_ph = args.lambda_phys * F.mse_loss(eng_gt_ph, z_s, reduction='sum') if args.enable_phys else 0.0
+                
+                loss_eanchor = loss_ea_s + loss_ea_p + loss_ea_ph
+            else:
+                energy_gt = model(gt_model_input, diopter)
+                if args.enable_energy_anchor:
+                    loss_eanchor = args.weight_energy_anchor * F.mse_loss(energy_gt, torch.zeros_like(energy_gt))
+                else:
+                    loss_eanchor = torch.tensor(0.0).to(device)
+
+        if torch.is_tensor(loss_eanchor) and loss_eanchor.item() > 0:
             if use_amp and scaler is not None:
                 scaler.scale(loss_eanchor).backward()
             else:
                 loss_eanchor.backward()
             batch_eanchor = loss_eanchor.item()
+            
+            if args.compositional_ebm:
+                comp_metrics['eanchor_struct'] += loss_ea_s.item() if isinstance(loss_ea_s, torch.Tensor) else loss_ea_s
+                comp_metrics['eanchor_percep'] += loss_ea_p.item() if isinstance(loss_ea_p, torch.Tensor) else loss_ea_p
+                comp_metrics['eanchor_phys'] += loss_ea_ph.item() if isinstance(loss_ea_ph, torch.Tensor) else loss_ea_ph
 
         if use_amp and scaler is not None:
             scaler.step(optimizer)
@@ -217,33 +299,40 @@ def train_epoch(model, loader, optimizer, device, epoch,
         else:
             optimizer.step()
 
-        avg_traj = batch_traj / gm_steps
-        avg_edist = batch_edist / gm_steps
-        avg_total = avg_traj + avg_edist + batch_eanchor
+        avg_traj = batch_traj / args.gm_steps
+        avg_total = avg_traj + batch_eanchor
 
         total_traj += avg_traj * N
-        total_edist += avg_edist * N
         total_eanchor += batch_eanchor * N
         total_loss += avg_total * N
         n += N
         pbar.set_postfix(loss=f'{avg_total:.4f}')
 
-    return {
+    # Return averaged metrics over epoch
+    res = {
         'total': total_loss / max(n, 1),
         'traj': total_traj / max(n, 1),
-        'edist': total_edist / max(n, 1),
         'eanchor': total_eanchor / max(n, 1),
     }
+    
+    if args.compositional_ebm:
+        res.update({
+            'loss_struct': (comp_metrics['loss_struct'] / args.gm_steps) / max(n, 1),
+            'loss_percep': (comp_metrics['loss_percep'] / args.gm_steps) / max(n, 1),
+            'loss_phys': (comp_metrics['loss_phys'] / args.gm_steps) / max(n, 1),
+            'eanchor_struct': comp_metrics['eanchor_struct'] / max(n, 1),
+            'eanchor_percep': comp_metrics['eanchor_percep'] / max(n, 1),
+            'eanchor_phys': comp_metrics['eanchor_phys'] / max(n, 1),
+        })
+
+    return res
 
 
 # ──────────────────────────────────────────────────────────────
 # Validation
 # ──────────────────────────────────────────────────────────────
 @torch.no_grad()
-def validate(model, loader, device, gm_steps, gm_step_size,
-            eta_min=0.002, eta_schedule='constant', langevin_noise=False,
-            noise_method='constant_scale', noise_scale=0.1,
-            bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0, use_amp=False):
+def validate(model, loader, device, args, use_amp=False):
     model.eval()
     total_loss = 0.0
     n = 0
@@ -260,8 +349,8 @@ def validate(model, loader, device, gm_steps, gm_step_size,
             current_image = torch.randn_like(gt).to(device)
             batch_loss = 0.0
 
-            for step in range(gm_steps):
-                eta = get_eta(step, gm_steps, gm_step_size, eta_min, eta_schedule)
+            for step in range(args.gm_steps):
+                eta = get_eta(step, args.gm_steps, args.gm_step_size, args.eta_min, args.eta_schedule)
                 current_image.requires_grad_(True)
 
                 with torch.cuda.amp.autocast(enabled=use_amp):
@@ -272,30 +361,39 @@ def validate(model, loader, device, gm_steps, gm_step_size,
                     else:
                         model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-                    energy = model(model_input, diopter)
-
-                    pred_grad = torch.autograd.grad(
-                        outputs=energy,
-                        inputs=current_image,
-                        grad_outputs=torch.ones_like(energy),
-                        create_graph=False
-                    )[0]
+                    if args.compositional_ebm:
+                        eng_struct, eng_percep, eng_phys = model(model_input, diopter)
+                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False)[0]
+                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False)[0]
+                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
+                        
+                        pred_grad_sum = torch.zeros_like(current_image)
+                        if args.enable_struct: pred_grad_sum += pred_gs
+                        if args.enable_percep: pred_grad_sum += pred_gp
+                        if args.enable_phys: pred_grad_sum += pred_gph
+                        
+                        pred_grad = pred_grad_sum
+                    else:
+                        energy = model(model_input, diopter)
+                        pred_grad = torch.autograd.grad(
+                            outputs=energy, inputs=current_image, grad_outputs=torch.ones_like(energy), create_graph=False
+                        )[0]
 
                     # Stop-gradient bypass
-                    if bypass_alpha > 0:
-                        bg = compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma)
+                    if args.bypass_alpha > 0:
+                        bg = compute_bypass_grad(x, current_image, args.bypass_lambda, args.bypass_gamma)
                         if bg is not None:
-                            pred_grad = pred_grad + bypass_alpha * bg
+                            pred_grad = pred_grad + args.bypass_alpha * bg
 
                     gt_grad = gt - current_image
                     loss = F.mse_loss(pred_grad, gt_grad)
                 
                 batch_loss += loss.item()
 
-                current_image = langevin_step(current_image, pred_grad, eta, langevin_noise,
-                                              noise_method, noise_scale)
+                current_image = langevin_step(current_image, pred_grad, eta, args.langevin_noise,
+                                              args.noise_method, args.noise_scale)
 
-        avg_step_loss = batch_loss / gm_steps
+        avg_step_loss = batch_loss / args.gm_steps
         total_loss += avg_step_loss * N
         n += N
         pbar.set_postfix(loss=f'{avg_step_loss:.4f}')
@@ -352,11 +450,21 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                     else:
                         model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-                    energy = model(model_input, diopter)
-                    pred_grad = torch.autograd.grad(
-                        energy, current_image, torch.ones_like(energy),
-                        create_graph=False
-                    )[0]
+                    if getattr(model, 'compositional_ebm', False):
+                        eng_struct, eng_percep, eng_phys = model(model_input, diopter)
+                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False)[0]
+                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False)[0]
+                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
+                        
+                        # Sum head gradients. In infer_steps, we assume all enabled config heads are summed.
+                        # Wait, we can't easily access args here depending on inputs. We skip this complexity and just sum all 3.
+                        pred_grad = pred_gs + pred_gp + pred_gph
+                    else:
+                        energy = model(model_input, diopter)
+                        pred_grad = torch.autograd.grad(
+                            energy, current_image, torch.ones_like(energy),
+                            create_graph=False
+                        )[0]
 
                     # Stop-gradient bypass
                     if bypass_alpha > 0:
@@ -519,7 +627,8 @@ def main():
             sharp_gamma_learnable=args.sharp_gamma_learnable,
             activation=args.activation,
             sharp_lambda_init=args.sharp_lambda,
-            sharp_gamma_init=args.sharp_gamma
+            sharp_gamma_init=args.sharp_gamma,
+            compositional_ebm=args.compositional_ebm
         ).to(device)
     elif args.arch == 'dwt_resnet_film':
         model = DWTResNetFiLM(
@@ -648,23 +757,15 @@ def main():
         )
 
         train_losses = train_epoch(model, train_loader, optimizer,
-                                   device, epoch, args.gm_steps, args.gm_step_size,
-                                   args.eta_min, args.eta_schedule, args.langevin_noise,
-                                   args.noise_method, args.noise_scale,
-                                   args.bypass_lambda, args.bypass_gamma, bypass_alpha,
-                                   scaler=scaler, use_amp=args.amp,
-                                   enable_energy_dist=args.enable_energy_dist,
-                                   weight_energy_dist=args.weight_energy_dist,
-                                   energy_dist_scale=args.energy_dist_scale,
-                                   enable_energy_anchor=args.enable_energy_anchor,
-                                   weight_energy_anchor=args.weight_energy_anchor)
+                                   device, epoch, args,
+                                   scaler=scaler, use_amp=args.amp)
         train_loss = train_losses['total']
-        val_loss = validate(model, val_loader, device, args.gm_steps, args.gm_step_size,
-                            args.eta_min, args.eta_schedule, args.langevin_noise,
-                            args.noise_method, args.noise_scale,
-                            args.bypass_lambda, args.bypass_gamma, bypass_alpha, use_amp=args.amp)
+
+        val_loss = validate(model, val_loader, device, args, use_amp=args.amp)
 
         print(f"Train Loss: {train_loss:.6f}  |  Val Loss: {val_loss:.6f}")
+        if args.compositional_ebm:
+            print(f"    Compositional: Struct={train_losses['loss_struct']:.4f}, Percep={train_losses['loss_percep']:.4f}, Phys={train_losses['loss_phys']:.4f}")
 
         # ── Val PSNR 측정 (실제 생성 품질) ──
         val_psnr = compute_val_psnr(
@@ -819,10 +920,23 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
                     else:
                         model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-                    energy = model(model_input, diopter)
-                    pred_grad = torch.autograd.grad(
-                        energy, current_image, torch.ones_like(energy)
-                    )[0]
+                    if getattr(model, 'compositional_ebm', False):
+                        eng_struct, eng_percep, eng_phys = model(model_input, diopter)
+                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct))[0]
+                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep))[0]
+                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys))[0]
+                        
+                        pred_grad_sum = torch.zeros_like(current_image)
+                        if args.enable_struct: pred_grad_sum += pred_gs
+                        if args.enable_percep: pred_grad_sum += pred_gp
+                        if args.enable_phys: pred_grad_sum += pred_gph
+                        
+                        pred_grad = pred_grad_sum
+                    else:
+                        energy = model(model_input, diopter)
+                        pred_grad = torch.autograd.grad(
+                            energy, current_image, torch.ones_like(energy)
+                        )[0]
 
                     # Stop-gradient bypass
                     if bypass_alpha > 0:

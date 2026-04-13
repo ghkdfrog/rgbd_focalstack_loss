@@ -1,0 +1,22 @@
+# Task: Physically-aware Compositional EBM 구현
+
+- [ ] `gm/config.py` 업데이트
+  - [ ] `--compositional_ebm`, `--enable_struct`, `--enable_percep`, `--enable_phys` 플래그 추가
+  - [ ] 세부물리 온/오프 `--enable_phys_blur` 등 추가
+  - [ ] 헤드 단위 결합 가중치 (`--w_struct` 등) 추가
+  - [ ] 앵커 최소화 가중치 (`--lambda_struct` 등 $1e-7$ 로 기본값 설정) 추가
+  - [ ] L_occlusion을 위한 `--kappa_occ` 상수 추가
+- [ ] `gm/model.py` 다중 헤드 출력 반영
+  - [ ] `--compositional_ebm` 옵션일 때 (E_struct, E_percep, E_phys) 3채널 출력으로 구조 변경.
+- [ ] 물리 모듈 및 Target 함수 구현 (`gm/train.py` 내 추가 클래스 또는 모듈)
+  - [ ] LPIPS 초기화 연동 (`net='alex'`)
+  - [ ] 구조적 Target $T_{struct}(x)$ (MSE + SSIM) 구현
+  - [ ] 지각적 Target $T_{percep}(x)$ (LPIPS) 구현
+  - [ ] 물리적 Target $T_{phys}(x)$ (Sobel, MaxPool2d 팽창, avg_pool2d 에너지 맵 활용한 합산 로스)
+- [ ] `gm/train.py` 학습 및 추론 개편 (`sum` Reduction과 메모리 절약)
+  - [ ] `reduction='sum'` 방식으로 Loss 합산 로직 구비
+  - [ ] Sequential Detach: Target gradient $\nabla_x T_k$ 추출 시 `create_graph=False` 로 역전파 계산 덜어내기
+  - [ ] Model gradient $\nabla_x E_k$ 추출 시 `create_graph=True` 적용 및 로스 총합 ( $L_{total\_train}$ ) 계산
+  - [ ] Tensorboard에 각각의 분리된 스칼라 및 궤적 오차, 물리 세부 오차 독립적으로 기록 (`writer.add_scalar`)
+  - [ ] Auto Inference 시 모델 출력된 3개의 E에 대하여 $\sum \nabla_x E_k$ 로 궤적 이동
+- [ ] 단일 씬(single_scene_only) 기능 동작 테스트 (Sanity/OOM Check)

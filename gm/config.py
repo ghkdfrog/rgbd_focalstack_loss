@@ -96,6 +96,65 @@ def get_parser():
     parser.add_argument('--bypass_ramp', type=int, default=10,
                         help='Number of epochs to ramp bypass from 0 to full strength (default: 10)')
 
+    # ── Compositional EBM (Multi-Head Sobolev Training) ──
+    parser.add_argument('--compositional_ebm', action='store_true',
+                        help='Enable multi-head Compositional EBM (Struct, Percep, Phys)')
+    # Head on/off toggles
+    parser.add_argument('--enable_struct', action='store_true',
+                        help='Enable structural head (L2 + SSIM)')
+    parser.add_argument('--enable_percep', action='store_true',
+                        help='Enable perceptual head (LPIPS)')
+    parser.add_argument('--enable_phys', action='store_true',
+                        help='Enable physical/optical head')
+    # Head-level loss combination weights
+    parser.add_argument('--w_struct', type=float, default=1.0,
+                        help='Weight for structural Sobolev loss')
+    parser.add_argument('--w_percep', type=float, default=1.0,
+                        help='Weight for perceptual Sobolev loss')
+    parser.add_argument('--w_phys', type=float, default=1.0,
+                        help='Weight for physical Sobolev loss')
+    # Sobolev anchor (scalar altitude) loss weights — keep very low
+    parser.add_argument('--lambda_struct', type=float, default=1e-7,
+                        help='Anchor weight for struct energy (E_struct ≈ T_struct)')
+    parser.add_argument('--lambda_percep', type=float, default=1e-7,
+                        help='Anchor weight for percep energy (E_percep ≈ T_percep)')
+    parser.add_argument('--lambda_phys', type=float, default=1e-7,
+                        help='Anchor weight for phys energy (E_phys ≈ T_phys)')
+    # Structural target internal weights
+    parser.add_argument('--alpha_struct', type=float, default=1.0,
+                        help='Struct target: L2 (SSE) weight')
+    parser.add_argument('--beta_struct', type=float, default=1.0,
+                        help='Struct target: (1-SSIM) weight')
+    # Physics sub-loss on/off toggles
+    parser.add_argument('--enable_phys_blur', action='store_true',
+                        help='Enable blur/edge focus loss in T_phys')
+    parser.add_argument('--enable_phys_occ', action='store_true',
+                        help='Enable occlusion boundary loss in T_phys')
+    parser.add_argument('--enable_phys_energy', action='store_true',
+                        help='Enable local energy conservation loss in T_phys')
+    parser.add_argument('--enable_phys_bokeh', action='store_true',
+                        help='Enable high-intensity bokeh loss in T_phys')
+    # Physics sub-loss weights
+    parser.add_argument('--lambda_blur_edge', type=float, default=1.0,
+                        help='Weight for blur/edge focus loss inside T_phys')
+    parser.add_argument('--lambda_occlusion', type=float, default=1.0,
+                        help='Weight for occlusion boundary loss inside T_phys')
+    parser.add_argument('--lambda_energy_conserv', type=float, default=1.0,
+                        help='Weight for local energy conservation loss inside T_phys')
+    parser.add_argument('--lambda_bokeh', type=float, default=1.0,
+                        help='Weight for high-intensity bokeh loss inside T_phys')
+    # Physics sub-loss hyperparameters
+    parser.add_argument('--phys_gamma', type=float, default=30.0,
+                        help='Blur edge: W_focal decay rate exp(-gamma*|CoC|)')
+    parser.add_argument('--kappa_occ', type=float, default=5.0,
+                        help='Occlusion mask sensitivity: M_occ = tanh(kappa * |grad(D)|)')
+    parser.add_argument('--energy_pool_k', type=int, default=31,
+                        help='Avg pool kernel size for energy conservation loss')
+    parser.add_argument('--bokeh_threshold', type=float, default=0.95,
+                        help='Highlight intensity threshold for bokeh mask')
+    parser.add_argument('--bokeh_dilate_k', type=int, default=15,
+                        help='MaxPool2d kernel size for bokeh mask dilation')
+
     # Energy Regularization
     parser.add_argument('--enable_energy_dist', action='store_true',
                         help='Enable E(current) ≈ -0.5·scale·mean(|current-GT|²) distance loss')

@@ -326,13 +326,15 @@ class SimpleResNetFiLM(nn.Module):
     - 나머지 구조는 SimpleResNet과 동일 (long_skip 지원)
     - use_sharp_prior: CoC 기반 Sharpness Prior (초점 영역 선명화)
     - activation: 'relu' 또는 'silu'
+    - compositional_ebm: True이면 3-head 출력 (E_struct, E_percep, E_phys)
     """
     def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
                  num_blocks=4, channels=256, long_skip=False,
                  use_sharp_prior=False,
                  sharp_lambda_learnable=False, sharp_gamma_learnable=False,
                  activation='relu',
-                 sharp_lambda_init=10.0, sharp_gamma_init=30.0):
+                 sharp_lambda_init=10.0, sharp_gamma_init=30.0,
+                 compositional_ebm=False):
         super(SimpleResNetFiLM, self).__init__()
         self.diopter_mode = diopter_mode
         self.energy_head = energy_head
@@ -341,6 +343,7 @@ class SimpleResNetFiLM(nn.Module):
         self.sharp_lambda_learnable = sharp_lambda_learnable
         self.sharp_gamma_learnable = sharp_gamma_learnable
         self.activation = activation
+        self.compositional_ebm = compositional_ebm
 
         act_fn = nn.SiLU() if activation == 'silu' else nn.ReLU()
         self.act = act_fn
@@ -357,11 +360,23 @@ class SimpleResNetFiLM(nn.Module):
             [FiLMResidualBlock(channels, activation=activation) for _ in range(num_blocks)]
         )
 
-        # Energy output head
-        if energy_head == 'conv1x1':
-            self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
-        else:  # 'fc'
-            self.fc = nn.Linear(channels * 512 * 512, 1)
+        # Energy output head(s)
+        if compositional_ebm:
+            # 3개의 독립된 에너지 헤드: Struct, Percep, Phys
+            if energy_head == 'conv1x1':
+                self.conv_energy_struct = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
+                self.conv_energy_percep = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
+                self.conv_energy_phys = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
+            else:  # 'fc'
+                self.fc_struct = nn.Linear(channels * 512 * 512, 1)
+                self.fc_percep = nn.Linear(channels * 512 * 512, 1)
+                self.fc_phys = nn.Linear(channels * 512 * 512, 1)
+        else:
+            # 기존 단일 에너지 헤드
+            if energy_head == 'conv1x1':
+                self.conv_energy = nn.Conv2d(channels, 1, kernel_size=1, stride=1, padding=0)
+            else:  # 'fc'
+                self.fc = nn.Linear(channels * 512 * 512, 1)
 
         # Sharp Prior: 초점 영역에서 원본 RGB로 당기는 해석적 이차항
         # lambda, gamma 각각 learnable / fixed 독립 설정 가능
@@ -376,7 +391,9 @@ class SimpleResNetFiLM(nn.Module):
             else:
                 self.register_buffer('sharp_gamma', torch.tensor(sharp_gamma_init))
 
-    def forward(self, x, diopter):
+    def _compute_backbone(self, x, diopter):
+        """공유 백본: 입력 → 최종 feature map 반환. 
+        cond_map, rgb_in, y_pred도 함께 반환."""
         N, C, H, W = x.shape
 
         # ── 원본 RGB & 생성 중 이미지 참조 (sharp prior용) ──
@@ -385,19 +402,15 @@ class SimpleResNetFiLM(nn.Module):
 
         # ── Condition map 추출 & 입력 분리 ──
         if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
-            # CoC는 8번째 채널 (index 7) — FiLM에만 사용
             cond_map = x[:, 7:8, :, :]
-            # 모델 입력: CoC 제외한 7ch (RGBD 4ch + predicted 3ch)
             x = x[:, :7, :, :]
         else:  # spatial
             cond_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
-            # spatial 모드: 입력 그대로 7ch
 
         x = self.act(self.conv_in(x))
         x = self.act(self.conv_expand(x))
 
         if self.long_skip:
-            # DeepFocus 스타일: 1-layer interval element-wise add
             outputs = []
             for i, block in enumerate(self.res_blocks):
                 if i >= 2:
@@ -408,25 +421,45 @@ class SimpleResNetFiLM(nn.Module):
             for block in self.res_blocks:
                 x = block(x, cond_map)
 
+        return x, cond_map, rgb_in, y_pred
+
+    def _apply_energy_head(self, feat, head_name):
+        """단일 에너지 헤드를 feature map에 적용하여 스칼라 에너지 반환."""
         if self.energy_head == 'conv1x1':
-            x = self.conv_energy(x)
-            eng = torch.sum(x, dim=(2, 3))   # (N, 1)
+            conv = getattr(self, f'conv_energy_{head_name}')
+            out = conv(feat)
+            return torch.sum(out, dim=(2, 3))  # (N, 1)
         else:  # 'fc'
-            x = torch.flatten(x, 1)
-            eng = self.fc(x)                  # (N, 1)
+            fc = getattr(self, f'fc_{head_name}')
+            return fc(torch.flatten(feat, 1))  # (N, 1)
 
-        # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
-        if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
-            coc_abs = torch.abs(cond_map)  # (N, 1, H, W)
-            # w(coc): CoC≈0 → 1 (초점 영역), CoC↑ → 0 (블러 영역)
-            w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
-            # 이차 페널티: 초점 영역에서 y → rgb 방향으로 당기는 에너지
-            sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
-                w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
-            )  # (N,)
-            eng = eng - sharp_penalty.unsqueeze(-1)  # (N, 1)
+    def forward(self, x, diopter):
+        feat, cond_map, rgb_in, y_pred = self._compute_backbone(x, diopter)
 
-        return eng
+        if self.compositional_ebm:
+            # 3-head 출력: (E_struct, E_percep, E_phys)
+            eng_struct = self._apply_energy_head(feat, 'struct')
+            eng_percep = self._apply_energy_head(feat, 'percep')
+            eng_phys = self._apply_energy_head(feat, 'phys')
+            return eng_struct, eng_percep, eng_phys
+        else:
+            # 기존 단일 헤드 출력
+            if self.energy_head == 'conv1x1':
+                out = self.conv_energy(feat)
+                eng = torch.sum(out, dim=(2, 3))  # (N, 1)
+            else:  # 'fc'
+                eng = self.fc(torch.flatten(feat, 1))  # (N, 1)
+
+            # ── Sharp Prior: E_total = E_nn - λ/2 · Σ w(coc)·(y - rgb)² ──
+            if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+                coc_abs = torch.abs(cond_map)  # (N, 1, H, W)
+                w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
+                sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
+                    w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
+                )  # (N,)
+                eng = eng - sharp_penalty.unsqueeze(-1)  # (N, 1)
+
+            return eng
 
 
 # ──────────────────────────────────────────────────────────────
