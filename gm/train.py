@@ -747,6 +747,8 @@ def main():
         else:
             bypass_alpha = 0.0
 
+        args.bypass_alpha = bypass_alpha
+
         if args.unmatch_ratio > 0:
             train_ds.resample_unmatch()
             print(f"  Resampled: {len(train_ds)} total samples")
