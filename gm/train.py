@@ -781,8 +781,18 @@ def main():
         if writer:
             writer.add_scalar('train/loss_total', train_losses['total'], epoch)
             writer.add_scalar('train/loss_traj', train_losses['traj'], epoch)
-            writer.add_scalar('train/loss_edist', train_losses['edist'], epoch)
             writer.add_scalar('train/loss_eanchor', train_losses['eanchor'], epoch)
+            
+            if args.compositional_ebm:
+                writer.add_scalar('train/loss_struct', train_losses.get('loss_struct', 0), epoch)
+                writer.add_scalar('train/loss_percep', train_losses.get('loss_percep', 0), epoch)
+                writer.add_scalar('train/loss_phys', train_losses.get('loss_phys', 0), epoch)
+                writer.add_scalar('train/eanchor_struct', train_losses.get('eanchor_struct', 0), epoch)
+                writer.add_scalar('train/eanchor_percep', train_losses.get('eanchor_percep', 0), epoch)
+                writer.add_scalar('train/eanchor_phys', train_losses.get('eanchor_phys', 0), epoch)
+            else:
+                writer.add_scalar('train/loss_edist', train_losses.get('edist', 0), epoch)
+                
             writer.add_scalar('val/loss', val_loss, epoch)
             writer.add_scalar('val/psnr', val_psnr, epoch)
 
