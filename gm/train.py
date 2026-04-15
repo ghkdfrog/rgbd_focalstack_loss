@@ -198,11 +198,11 @@ def train_epoch(model, loader, optimizer, device, epoch,
                     if err_phys.item() > 0:
                         tgt_grad_phys = -torch.autograd.grad(err_phys, x_for_tgt_phys, create_graph=False)[0].detach()
 
-                # C: Loss Computation (Sum reduction mathematically integrated)
+                # C: Loss Computation (Mean reduction to match single-head scale)
                 with torch.cuda.amp.autocast(enabled=use_amp):
-                    loss_s = F.mse_loss(pred_grad_struct, tgt_grad_struct, reduction='sum') if args.enable_struct else torch.tensor(0.0, device=device)
-                    loss_p = F.mse_loss(pred_grad_percep, tgt_grad_percep, reduction='sum') if args.enable_percep else torch.tensor(0.0, device=device)
-                    loss_ph = F.mse_loss(pred_grad_phys, tgt_grad_phys, reduction='sum') if args.enable_phys else torch.tensor(0.0, device=device)
+                    loss_s = F.mse_loss(pred_grad_struct, tgt_grad_struct) if args.enable_struct else torch.tensor(0.0, device=device)
+                    loss_p = F.mse_loss(pred_grad_percep, tgt_grad_percep) if args.enable_percep else torch.tensor(0.0, device=device)
+                    loss_ph = F.mse_loss(pred_grad_phys, tgt_grad_phys) if args.enable_phys else torch.tensor(0.0, device=device)
 
                     loss_traj = args.w_struct * loss_s + args.w_percep * loss_p + args.w_phys * loss_ph
 
