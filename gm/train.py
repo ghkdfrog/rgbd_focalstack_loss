@@ -363,8 +363,8 @@ def validate(model, loader, device, args, use_amp=False):
 
                     if args.compositional_ebm:
                         eng_struct, eng_percep, eng_phys = model(model_input, diopter)
-                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False)[0]
-                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False)[0]
+                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
+                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
                         pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
                         
                         pred_grad_sum = torch.zeros_like(current_image)
@@ -452,8 +452,8 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
 
                     if getattr(model, 'compositional_ebm', False):
                         eng_struct, eng_percep, eng_phys = model(model_input, diopter)
-                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False)[0]
-                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False)[0]
+                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
+                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
                         pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
                         
                         # Sum head gradients. In infer_steps, we assume all enabled config heads are summed.
