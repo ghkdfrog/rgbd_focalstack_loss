@@ -60,6 +60,9 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
         use_film = True
 
     compositional_ebm = ckpt.get('compositional_ebm', False)
+    # Fallback: detect from state_dict keys for checkpoints saved before this flag existed
+    if not compositional_ebm and 'fc_struct.weight' in ckpt.get('model_state_dict', {}):
+        compositional_ebm = True
 
     if arch == 'deep':
         model = SimpleCNNDeep(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
