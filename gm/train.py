@@ -835,7 +835,11 @@ def main():
             'bypass_lambda': args.bypass_lambda,
             'bypass_gamma': args.bypass_gamma,
             'bypass_warmup': args.bypass_warmup,
-            'bypass_ramp': args.bypass_ramp
+            'bypass_ramp': args.bypass_ramp,
+            'compositional_ebm': args.compositional_ebm,
+            'enable_struct': args.enable_struct,
+            'enable_percep': args.enable_percep,
+            'enable_phys': args.enable_phys,
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:
@@ -934,9 +938,9 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
 
                     if getattr(model, 'compositional_ebm', False):
                         eng_struct, eng_percep, eng_phys = model(model_input, diopter)
-                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct))[0]
-                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep))[0]
-                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys))[0]
+                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
+                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
+                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
                         
                         pred_grad_sum = torch.zeros_like(current_image)
                         if args.enable_struct: pred_grad_sum += pred_gs

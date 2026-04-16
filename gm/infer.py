@@ -59,6 +59,8 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
         arch = 'resnet'
         use_film = True
 
+    compositional_ebm = ckpt.get('compositional_ebm', False)
+
     if arch == 'deep':
         model = SimpleCNNDeep(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
     elif arch == 'stride':
@@ -66,7 +68,7 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     elif arch == 'resnet':
         model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
     elif arch == 'resnet_film':
-        model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, use_sharp_prior=sharp_prior, sharp_lambda_learnable=sharp_lambda_learnable, sharp_gamma_learnable=sharp_gamma_learnable, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
+        model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, use_sharp_prior=sharp_prior, sharp_lambda_learnable=sharp_lambda_learnable, sharp_gamma_learnable=sharp_gamma_learnable, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init, compositional_ebm=compositional_ebm).to(device)
     elif arch == 'dwt_resnet_film':
         model = DWTResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, activation=activation).to(device)
     elif arch == 'resunet':
@@ -119,7 +121,8 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                        eta_min=0.002, eta_schedule='constant', use_langevin_noise=False,
                        noise_method='constant_scale', noise_scale=0.1,
                        infer_sharp=False, infer_sharp_lambda=5.0,
-                       infer_sharp_gamma=30.0, infer_sharp_start=0.5, use_amp=False):
+                       infer_sharp_gamma=30.0, infer_sharp_start=0.5, use_amp=False,
+                       enable_struct=True, enable_percep=True, enable_phys=True):
     """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR/energy를 반환
 
     infer_sharp: True이면 inference-time sharpening 적용
@@ -156,15 +159,28 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                 else:
                     model_input = torch.cat([input_rgbd, current_image], dim=1)
 
-                energy = model(model_input, diopter)
-                energy_val = energy.item()  # 모델 출력(에너지) 스칼라 값 기록
+                if getattr(model, 'compositional_ebm', False):
+                    eng_struct, eng_percep, eng_phys = model(model_input, diopter)
+                    energy_val = (eng_struct.item() + eng_percep.item() + eng_phys.item())
 
-                grad = torch.autograd.grad(
-                    outputs=energy,
-                    inputs=current_image,
-                    grad_outputs=torch.ones_like(energy),
-                    create_graph=False
-                )[0]
+                    pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
+                    pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
+                    pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
+
+                    grad = torch.zeros_like(current_image)
+                    if enable_struct: grad = grad + pred_gs
+                    if enable_percep: grad = grad + pred_gp
+                    if enable_phys: grad = grad + pred_gph
+                else:
+                    energy = model(model_input, diopter)
+                    energy_val = energy.item()
+
+                    grad = torch.autograd.grad(
+                        outputs=energy,
+                        inputs=current_image,
+                        grad_outputs=torch.ones_like(energy),
+                        create_graph=False
+                    )[0]
 
             # ── Inference-time Sharpening ──
             # 해석적 gradient: ∇E_sharp/∂y = -λ · w(coc) · (y - rgb)
@@ -401,11 +417,17 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
         diopter = diopter.unsqueeze(0).to(device)
         gt = gt.unsqueeze(0).to(device)
 
+        # Compositional head enable flags from saved_args
+        enable_struct = saved_args.get('enable_struct', True)
+        enable_percep = saved_args.get('enable_percep', True)
+        enable_phys = saved_args.get('enable_phys', True)
+
         final_image, psnr, history, step_psnr_history = generate_one_plane(
             model, x, diopter, gt, device, gm_steps, gm_step_size,
             eta_min, eta_schedule, langevin_noise, noise_method, noise_scale,
             infer_sharp=args.infer_sharp, infer_sharp_lambda=args.infer_sharp_lambda,
-            infer_sharp_gamma=args.infer_sharp_gamma, infer_sharp_start=args.infer_sharp_start, use_amp=use_amp
+            infer_sharp_gamma=args.infer_sharp_gamma, infer_sharp_start=args.infer_sharp_start, use_amp=use_amp,
+            enable_struct=enable_struct, enable_percep=enable_percep, enable_phys=enable_phys
         )
 
         all_step_data[p_idx] = step_psnr_history
