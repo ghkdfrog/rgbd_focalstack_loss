@@ -166,14 +166,16 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                     eng_struct, eng_percep, eng_phys = model(model_input, diopter)
                     energy_val = (eng_struct.item() + eng_percep.item() + eng_phys.item())
 
-                    pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
-                    pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
-                    pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
-
                     grad = torch.zeros_like(current_image)
-                    if enable_struct: grad = grad + pred_gs
-                    if enable_percep: grad = grad + pred_gp
-                    if enable_phys: grad = grad + pred_gph
+                    if enable_struct:
+                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
+                        grad = grad + pred_gs
+                    if enable_percep:
+                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
+                        grad = grad + pred_gp
+                    if enable_phys:
+                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False, retain_graph=True)[0]
+                        grad = grad + pred_gph
                 else:
                     energy = model(model_input, diopter)
                     energy_val = energy.item()
