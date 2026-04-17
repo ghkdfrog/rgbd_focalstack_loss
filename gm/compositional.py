@@ -17,7 +17,7 @@ class CompositionalTargets(nn.Module):
         
         # 1. Perceptual Head (LPIPS - AlexNet)
         if args.compositional_ebm and args.enable_percep:
-            self.lpips_net = lpips.LPIPS(net='alex').to(device).eval()
+            self.lpips_net = lpips.LPIPS(net='alex', spatial=True).to(device).eval()
             for param in self.lpips_net.parameters():
                 param.requires_grad = False
                 
