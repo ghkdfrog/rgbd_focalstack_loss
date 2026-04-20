@@ -408,7 +408,8 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                     eta_min=0.002, eta_schedule='constant', langevin_noise=False,
                     noise_method='constant_scale', noise_scale=0.1,
                     eval_plane=20,
-                    bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0, use_amp=False, args=None):
+                    bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0, use_amp=False,
+                    enable_struct=True, enable_percep=True, enable_phys=True):
     """Val set의 모든 scene에 대해 특정 plane을 생성하고 평균 PSNR을 반환.
     
     val_loss와 달리 실제 이미지 생성 품질을 측정하므로,
@@ -452,18 +453,13 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
 
                     if getattr(model, 'compositional_ebm', False):
                         eng_struct, eng_percep, eng_phys = model(model_input, diopter)
-                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
-                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
-                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
-                        
-                        # Sum only enabled head gradients to prevent random noise injection
                         pred_grad = torch.zeros_like(current_image)
-                        if args and getattr(args, 'enable_struct', True):
-                            pred_grad += pred_gs
-                        if args and getattr(args, 'enable_percep', True):
-                            pred_grad += pred_gp
-                        if args and getattr(args, 'enable_phys', True):
-                            pred_grad += pred_gph
+                        if enable_struct:
+                            pred_grad += torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
+                        if enable_percep:
+                            pred_grad += torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
+                        if enable_phys:
+                            pred_grad += torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
                     else:
                         energy = model(model_input, diopter)
                         pred_grad = torch.autograd.grad(
@@ -781,7 +777,8 @@ def main():
             args.noise_method, args.noise_scale,
             eval_plane=20,
             bypass_lambda=args.bypass_lambda, bypass_gamma=args.bypass_gamma,
-            bypass_alpha=bypass_alpha, use_amp=args.amp, args=args
+            bypass_alpha=bypass_alpha, use_amp=args.amp,
+            enable_struct=args.enable_struct, enable_percep=args.enable_percep, enable_phys=args.enable_phys
         )
         print(f"Val PSNR (plane 20 avg): {val_psnr:.2f} dB")
 
