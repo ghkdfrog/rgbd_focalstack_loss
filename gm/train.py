@@ -165,10 +165,21 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 with torch.cuda.amp.autocast(enabled=use_amp):
                     eng_struct, eng_percep, eng_phys = model(model_input, diopter)
                     
-                # A: Model Gradients (create_graph=True)
-                pred_grad_struct = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=True)[0]
-                pred_grad_percep = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=True)[0]
-                pred_grad_phys = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=True)[0]
+                # A: Model Gradients (create_graph=True) - Calculate selectively to save VRAM
+                if args.enable_struct:
+                    pred_grad_struct = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=True)[0]
+                else:
+                    pred_grad_struct = torch.zeros_like(current_image)
+                    
+                if args.enable_percep:
+                    pred_grad_percep = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=True)[0]
+                else:
+                    pred_grad_percep = torch.zeros_like(current_image)
+                    
+                if args.enable_phys:
+                    pred_grad_phys = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=True)[0]
+                else:
+                    pred_grad_phys = torch.zeros_like(current_image)
 
                 # B: Target Gradients (Sequential Detach)
                 
