@@ -113,7 +113,7 @@ def compute_bypass_grad(x, current_image, bypass_lambda, bypass_gamma):
 # Training (one epoch)
 # ──────────────────────────────────────────────────────────────
 def train_epoch(model, loader, optimizer, device, epoch,
-                args, scaler=None, use_amp=False, tb_writer=None, global_step=None):
+                args, comp_targets=None, scaler=None, use_amp=False, tb_writer=None, global_step=None):
     model.train()
     total_loss = 0.0
     total_traj = 0.0
@@ -128,8 +128,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
     n = 0
     pbar = tqdm(loader, desc=f'Epoch {epoch} [train]', leave=False, dynamic_ncols=True)
     
-    # Initialize targets globally
-    if args.compositional_ebm:
+    # Initialize targets globally if not provided
+    if args.compositional_ebm and comp_targets is None:
         comp_targets = CompositionalTargets(args, device)
         
     for batch_data in pbar:
@@ -269,10 +269,13 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 eng_gt_s, eng_gt_p, eng_gt_ph = model(gt_model_input, diopter)
                 z_s = torch.zeros_like(eng_gt_s)
                 
-                loss_ea_s = args.lambda_struct * F.mse_loss(eng_gt_s, z_s, reduction='sum') if args.enable_struct else 0.0
-                loss_ea_p = args.lambda_percep * F.mse_loss(eng_gt_p, z_s, reduction='sum') if args.enable_percep else 0.0
-                loss_ea_ph = args.lambda_phys * F.mse_loss(eng_gt_ph, z_s, reduction='sum') if args.enable_phys else 0.0
-                
+                if getattr(args, 'enable_energy_anchor', False):
+                    loss_ea_s = args.lambda_struct * F.mse_loss(eng_gt_s, z_s, reduction='sum') if args.enable_struct else 0.0
+                    loss_ea_p = args.lambda_percep * F.mse_loss(eng_gt_p, z_s, reduction='sum') if args.enable_percep else 0.0
+                    loss_ea_ph = args.lambda_phys * F.mse_loss(eng_gt_ph, z_s, reduction='sum') if args.enable_phys else 0.0
+                else:
+                    loss_ea_s = loss_ea_p = loss_ea_ph = 0.0
+                    
                 loss_eanchor = loss_ea_s + loss_ea_p + loss_ea_ph
             else:
                 energy_gt = model(gt_model_input, diopter)
@@ -733,6 +736,11 @@ def main():
     best_val_loss = float('inf')
     best_val_psnr = 0.0  # PSNR 기반 best 모델 추적
 
+    comp_targets = None
+    if getattr(args, 'compositional_ebm', False):
+        from compositional import CompositionalTargets
+        comp_targets = CompositionalTargets(args, device)
+
     # ── Training loop ──
     for epoch in range(start_epoch, args.epochs + 1):
         print(f"\n=== Epoch {epoch}/{args.epochs} ===")
@@ -760,7 +768,7 @@ def main():
         )
 
         train_losses = train_epoch(model, train_loader, optimizer,
-                                   device, epoch, args,
+                                   device, epoch, args, comp_targets=comp_targets,
                                    scaler=scaler, use_amp=args.amp)
         train_loss = train_losses['total']
 
