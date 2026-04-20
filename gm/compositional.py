@@ -45,7 +45,7 @@ class CompositionalTargets(nn.Module):
         x_pred, gt: (N, 3, H, W)
         Returns: scalar total error (reduced by sum)
         """
-        l2_err = (x_pred - gt) ** 2
+        l2_err = 0.5 * (x_pred - gt) ** 2
         
         # SSIM Loss expects values in [0, 1] typically, so we keep them as is
         # Surrogate: L1 Loss per pixel
