@@ -377,14 +377,21 @@ def validate(model, loader, device, args, use_amp=False):
 
                     if args.compositional_ebm:
                         eng_struct, eng_percep, eng_phys = model(model_input, diopter)
-                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
-                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
-                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
-                        
                         pred_grad_sum = torch.zeros_like(current_image)
-                        if args.enable_struct: pred_grad_sum += pred_gs
-                        if args.enable_percep: pred_grad_sum += pred_gp
-                        if args.enable_phys: pred_grad_sum += pred_gph
+                        
+                        if args.enable_struct:
+                            retain = args.enable_percep or args.enable_phys
+                            pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=retain)[0]
+                            pred_grad_sum += pred_gs
+                            
+                        if args.enable_percep:
+                            retain = args.enable_phys
+                            pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=retain)[0]
+                            pred_grad_sum += pred_gp
+                            
+                        if args.enable_phys:
+                            pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
+                            pred_grad_sum += pred_gph
                         
                         pred_grad = pred_grad_sum
                     else:
@@ -469,9 +476,11 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                         eng_struct, eng_percep, eng_phys = model(model_input, diopter)
                         pred_grad = torch.zeros_like(current_image)
                         if enable_struct:
-                            pred_grad += torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
+                            retain = enable_percep or enable_phys
+                            pred_grad += torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=retain)[0]
                         if enable_percep:
-                            pred_grad += torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
+                            retain = enable_phys
+                            pred_grad += torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=retain)[0]
                         if enable_phys:
                             pred_grad += torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
                     else:
@@ -999,14 +1008,21 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
 
                     if getattr(model, 'compositional_ebm', False):
                         eng_struct, eng_percep, eng_phys = model(model_input, diopter)
-                        pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=True)[0]
-                        pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=True)[0]
-                        pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
-                        
                         pred_grad_sum = torch.zeros_like(current_image)
-                        if args.enable_struct: pred_grad_sum += pred_gs
-                        if args.enable_percep: pred_grad_sum += pred_gp
-                        if args.enable_phys: pred_grad_sum += pred_gph
+                        
+                        if args.enable_struct:
+                            retain = args.enable_percep or args.enable_phys
+                            pred_gs = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=False, retain_graph=retain)[0]
+                            pred_grad_sum += pred_gs
+                            
+                        if args.enable_percep:
+                            retain = args.enable_phys
+                            pred_gp = torch.autograd.grad(eng_percep, current_image, torch.ones_like(eng_percep), create_graph=False, retain_graph=retain)[0]
+                            pred_grad_sum += pred_gp
+                            
+                        if args.enable_phys:
+                            pred_gph = torch.autograd.grad(eng_phys, current_image, torch.ones_like(eng_phys), create_graph=False)[0]
+                            pred_grad_sum += pred_gph
                         
                         pred_grad = pred_grad_sum
                     else:
