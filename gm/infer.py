@@ -33,8 +33,8 @@ from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 
-def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256, use_film=False, long_skip=False, interleave_rate=2):
-    """체크포인트 파일에서 모델 로드"""
+def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256, use_film=False, long_skip=False, interleave_rate=2, force_compositional=False):
+    \"\"\"체크포인트 파일에서 모델 로드\"\"\"
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
 
@@ -63,6 +63,16 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     # Fallback: detect from state_dict keys for checkpoints saved before this flag existed
     if not compositional_ebm and 'fc_struct.weight' in ckpt.get('model_state_dict', {}):
         compositional_ebm = True
+        
+    if force_compositional:
+        compositional_ebm = True
+        state_dict = ckpt['model_state_dict']
+        print("  [Adapter] Forcing Compositional Mappings (fc -> fc_struct)")
+        # 단일 표준 가중치를 Compositional Struct 헤드로 수동 매핑
+        for key in list(state_dict.keys()):
+            if key.startswith('fc.') or key.startswith('conv_energy.'):
+                new_key = key.replace('fc.', 'fc_struct.').replace('conv_energy.', 'conv_energy_struct.')
+                state_dict[new_key] = state_dict.pop(key)
 
     if arch == 'deep':
         model = SimpleCNNDeep(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
@@ -361,7 +371,11 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
     energy_head = saved_args.get('energy_head', 'fc')
     arch = saved_args.get('arch', 'simple')
 
-    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, channels=channels, use_film=use_film, long_skip=long_skip, interleave_rate=interleave_rate)
+    force_compositional = getattr(args, 'force_compositional', False)
+
+    model, ckpt_epoch = load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch, 
+                                             channels=channels, use_film=use_film, long_skip=long_skip, 
+                                             interleave_rate=interleave_rate, force_compositional=force_compositional)
 
     if args.compile:
         print(f"  Applying torch.compile(mode={args.compile_mode})...")
@@ -426,6 +440,12 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
         enable_struct = saved_args.get('enable_struct', True)
         enable_percep = saved_args.get('enable_percep', True)
         enable_phys = saved_args.get('enable_phys', True)
+        
+        if getattr(args, 'force_compositional', False):
+            # 과거 모델 이식 테스트 모드에서는 랜덤 초기화된 타 헤드가 수렴을 깨지 못하도록 Struct만 활성화
+            enable_struct = True
+            enable_percep = False
+            enable_phys = False
 
         final_image, psnr, history, step_psnr_history = generate_one_plane(
             model, x, diopter, gt, device, gm_steps, gm_step_size,

@@ -203,6 +203,10 @@ def get_parser():
                         help='CoC decay rate for sharpening weight (default: 30.0)')
     parser.add_argument('--infer_sharp_start', type=float, default=0.5,
                         help='Start sharpening at this fraction of total steps (0.0~1.0, default: 0.5)')
+                        
+    # Compositional Backward Compatibility
+    parser.add_argument('--force_compositional', action='store_true',
+                        help='Force load a non-compositional standard checkpoint into a compositional struct head for backward testing')
 
     return parser
 

@@ -526,7 +526,6 @@ def main():
         parser = get_parser()
         defaults = vars(parser.parse_args([]))
 
-        # saved_args에서 복원할 키 목록 (학습 설정 전체)
         restore_keys = [
             'arch', 'diopter_mode', 'energy_head', 'channels',
             'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda_learnable', 'sharp_gamma_learnable', 'sharp_lambda', 'sharp_gamma',
@@ -536,7 +535,14 @@ def main():
             'train_bypass', 'bypass_lambda', 'bypass_gamma', 'bypass_warmup', 'bypass_ramp',
             'enable_energy_dist', 'weight_energy_dist', 'energy_dist_scale', 'enable_energy_anchor', 'weight_energy_anchor',
             'single_scene_only', 'num_scenes', 'unmatch_ratio', 'save_every',
-            'data_dir', 'generated_data_dir', 'output_dir'
+            'data_dir', 'generated_data_dir', 'output_dir',
+            # Compositional EBM keys
+            'compositional_ebm', 'enable_struct', 'enable_percep', 'enable_phys',
+            'w_struct', 'w_percep', 'w_phys', 'lambda_struct', 'lambda_percep', 'lambda_phys',
+            'alpha_struct', 'beta_struct',
+            'enable_phys_blur', 'enable_phys_occ', 'enable_phys_energy', 'enable_phys_bokeh',
+            'lambda_blur_edge', 'lambda_occlusion', 'lambda_energy_conserv', 'lambda_bokeh',
+            'phys_gamma', 'kappa_occ', 'energy_pool_k', 'bokeh_threshold', 'bokeh_dilate_k'
         ]
 
         for key in restore_keys:
