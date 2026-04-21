@@ -99,7 +99,7 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
     else:
         model = SimpleCNN(diopter_mode=diopter_mode, energy_head=energy_head).to(device)
 
-    model.load_state_dict(ckpt['model_state_dict'])
+    model.load_state_dict(ckpt['model_state_dict'], strict=not force_compositional)
     model.eval()
 
     epoch = ckpt.get('epoch', '?')
