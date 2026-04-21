@@ -149,6 +149,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
 
         # 1. Start from random noise
         current_image = torch.randn_like(gt).to(device)
+        if getattr(args, 'clip_image', False):
+            current_image.clamp_(0.0, 1.0)
         batch_traj = 0.0
 
         # 2. Trajectory looping
@@ -287,9 +289,9 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 z_s = torch.zeros_like(eng_gt_s)
                 
                 if getattr(args, 'enable_energy_anchor', False):
-                    loss_ea_s = args.lambda_struct * F.mse_loss(eng_gt_s, z_s, reduction='sum') if args.enable_struct else 0.0
-                    loss_ea_p = args.lambda_percep * F.mse_loss(eng_gt_p, z_s, reduction='sum') if args.enable_percep else 0.0
-                    loss_ea_ph = args.lambda_phys * F.mse_loss(eng_gt_ph, z_s, reduction='sum') if args.enable_phys else 0.0
+                    loss_ea_s = args.lambda_struct * F.mse_loss(eng_gt_s, z_s, reduction='mean') if args.enable_struct else 0.0
+                    loss_ea_p = args.lambda_percep * F.mse_loss(eng_gt_p, z_s, reduction='mean') if args.enable_percep else 0.0
+                    loss_ea_ph = args.lambda_phys * F.mse_loss(eng_gt_ph, z_s, reduction='mean') if args.enable_phys else 0.0
                 else:
                     loss_ea_s = loss_ea_p = loss_ea_ph = 0.0
                     
@@ -367,6 +369,8 @@ def validate(model, loader, device, args, use_amp=False):
 
         with torch.enable_grad():
             current_image = torch.randn_like(gt).to(device)
+            if getattr(args, 'clip_image', False):
+                current_image.clamp_(0.0, 1.0)
             batch_loss = 0.0
 
             for step in range(args.gm_steps):
@@ -464,6 +468,8 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
 
         with torch.enable_grad():
             current_image = torch.randn_like(gt).to(device)
+            if clip_image:
+                current_image.clamp_(0.0, 1.0)
             N, C, H, W = x.shape
 
             for step in range(gm_steps):
