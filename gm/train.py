@@ -78,6 +78,8 @@ def langevin_step(current_image, pred_grad, eta, use_noise=False,
         - constant_scale: noise_term = noise_scale * eta * z
     """
     with torch.no_grad():
+        # Gradient Clipping to prevent Langevin explosion
+        pred_grad = torch.clamp(pred_grad, -5.0, 5.0)
         new_image = current_image + eta * pred_grad
         if use_noise:
             noise = torch.randn_like(current_image)
