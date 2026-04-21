@@ -34,7 +34,7 @@ from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 
 
 def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='simple', channels=256, use_film=False, long_skip=False, interleave_rate=2, force_compositional=False):
-    \"\"\"체크포인트 파일에서 모델 로드\"\"\"
+    """체크포인트 파일에서 모델 로드"""
     print(f"Loading checkpoint: {ckpt_path}")
     ckpt = torch.load(ckpt_path, map_location=device)
 
