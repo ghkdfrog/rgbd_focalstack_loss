@@ -149,8 +149,6 @@ def train_epoch(model, loader, optimizer, device, epoch,
 
         # 1. Start from random noise
         current_image = torch.randn_like(gt).to(device)
-        if getattr(args, 'clip_image', False):
-            current_image.clamp_(0.0, 1.0)
         batch_traj = 0.0
 
         # 2. Trajectory looping
@@ -369,8 +367,6 @@ def validate(model, loader, device, args, use_amp=False):
 
         with torch.enable_grad():
             current_image = torch.randn_like(gt).to(device)
-            if getattr(args, 'clip_image', False):
-                current_image.clamp_(0.0, 1.0)
             batch_loss = 0.0
 
             for step in range(args.gm_steps):
@@ -468,8 +464,6 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
 
         with torch.enable_grad():
             current_image = torch.randn_like(gt).to(device)
-            if clip_image:
-                current_image.clamp_(0.0, 1.0)
             N, C, H, W = x.shape
 
             for step in range(gm_steps):
