@@ -789,7 +789,7 @@ def main():
 
     comp_targets = None
     if getattr(args, 'compositional_ebm', False):
-        from compositional import CompositionalTargets
+        from gm.compositional import CompositionalTargets
         comp_targets = CompositionalTargets(args, device)
 
     # ── Training loop ──
