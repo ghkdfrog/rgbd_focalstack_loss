@@ -555,12 +555,25 @@ def main():
 
         # resume 체크포인트 자동 설정
         args.resume = resume_ckpt_path
-        output_dir = args.resume_dir
-
+        
         print(f"\n{'='*50}")
         print(f"  AUTO-RESUME from: {args.resume_dir}")
         print(f"  Checkpoint: latest.pth")
         print(f"  Config restored from args.json")
+
+        if getattr(args, 'new_run_on_resume', False):
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            scene_str = "scene0_" if args.single_scene_only else ""
+            head_str = f"_{args.energy_head}" if args.energy_head != 'fc' else ""
+            eta_str = f"_{args.eta_schedule}" if args.eta_schedule != 'constant' else ""
+            run_name = f"gm_{scene_str}{args.diopter_mode}{head_str}{eta_str}_{timestamp}_resumed"
+            output_dir = os.path.join(args.output_dir, run_name)
+            os.makedirs(output_dir, exist_ok=True)
+            print(f"  --> Creating NEW run directory: {output_dir}")
+        else:
+            output_dir = args.resume_dir
+            print(f"  --> Overwriting in directory: {output_dir}")
+            
         print(f"{'='*50}\n")
     else:
         # ── 새 run: Output directory 생성 ──
@@ -726,7 +739,28 @@ def main():
     start_epoch = 1
     if args.resume:
         ckpt = torch.load(args.resume, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
+        state_dict = ckpt['model_state_dict']
+        
+        if getattr(args, 'compositional_ebm', False) and getattr(args, 'force_compositional', False):
+            has_comp_keys = any('struct' in k or 'percep' in k or 'phys' in k for k in state_dict.keys())
+            if not has_comp_keys:
+                print("Force compositional: Mapping standard energy head to compositional struct head...")
+                new_state_dict = state_dict.copy()
+                if args.energy_head == 'conv1x1':
+                    if 'conv_energy.weight' in state_dict and 'conv_energy_struct.weight' not in state_dict:
+                        new_state_dict['conv_energy_struct.weight'] = new_state_dict.pop('conv_energy.weight')
+                        new_state_dict['conv_energy_struct.bias'] = new_state_dict.pop('conv_energy.bias')
+                else: 
+                    if 'fc.weight' in state_dict and 'fc_struct.weight' not in state_dict:
+                        new_state_dict['fc_struct.weight'] = new_state_dict.pop('fc.weight')
+                        new_state_dict['fc_struct.bias'] = new_state_dict.pop('fc.bias')
+                state_dict = new_state_dict
+        
+        strict_load = not (getattr(args, 'compositional_ebm', False) and getattr(args, 'force_compositional', False))
+        missing, unexpected = model.load_state_dict(state_dict, strict=strict_load)
+        if not strict_load:
+            print(f"Force compositional missing keys (initialized randomly): {missing}")
+            
         start_epoch = ckpt.get('epoch', 0) + 1
         print(f"Resumed from {args.resume} (epoch {start_epoch})")
 
