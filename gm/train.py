@@ -69,7 +69,7 @@ def get_eta(step, total_steps, eta_max, eta_min, schedule='constant'):
 
 
 def langevin_step(current_image, pred_grad, eta, use_noise=False,
-                  noise_method='constant_scale', noise_scale=0.1):
+                  noise_method='constant_scale', noise_scale=0.1, clip_image=False):
     """η 스케줄 + 선택적 Langevin 노이즈를 적용한 업데이트.
 
     x_{t+1} = x_t + η * ∇E  [+ noise_term]
@@ -88,6 +88,10 @@ def langevin_step(current_image, pred_grad, eta, use_noise=False,
             else:
                 # fallback: original sqrt(2*eta) for unknown methods
                 new_image = new_image + math.sqrt(2 * eta) * noise
+                
+        if clip_image:
+            new_image.clamp_(0.0, 1.0)
+            
         return new_image.detach()
 
 
@@ -167,7 +171,7 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 with torch.cuda.amp.autocast(enabled=use_amp):
                     eng_struct, eng_percep, eng_phys = model(model_input, diopter)
                     
-                # A: Model Gradients (create_graph=True) - Calculate selectively to save VRAM
+                # A: Model Gradients (create_graph=True) - Calculate selectively  to save VRAM
                 if args.enable_struct:
                     pred_grad_struct = torch.autograd.grad(eng_struct, current_image, torch.ones_like(eng_struct), create_graph=True)[0]
                 else:
@@ -242,7 +246,7 @@ def train_epoch(model, loader, optimizer, device, epoch,
                     if bg is not None:
                         pred_grad_sum = pred_grad_sum + args.bypass_alpha * bg
 
-                current_image = langevin_step(current_image, pred_grad_sum, eta, args.langevin_noise, args.noise_method, args.noise_scale)
+                current_image = langevin_step(current_image, pred_grad_sum, eta, args.langevin_noise, args.noise_method, args.noise_scale, clip_image=getattr(args, 'clip_image', False))
 
             else:
                 # -------------------------------------------------------------
@@ -266,7 +270,7 @@ def train_epoch(model, loader, optimizer, device, epoch,
                     loss_traj.backward()
 
                 batch_traj += loss_traj.item()
-                current_image = langevin_step(current_image, pred_grad, eta, args.langevin_noise, args.noise_method, args.noise_scale)
+                current_image = langevin_step(current_image, pred_grad, eta, args.langevin_noise, args.noise_method, args.noise_scale, clip_image=getattr(args, 'clip_image', False))
 
         # 3. Energy Anchor Loss: E(GT) → 0 
         batch_eanchor = 0.0
@@ -414,7 +418,7 @@ def validate(model, loader, device, args, use_amp=False):
                 batch_loss += loss.item()
 
                 current_image = langevin_step(current_image, pred_grad, eta, args.langevin_noise,
-                                              args.noise_method, args.noise_scale)
+                                              args.noise_method, args.noise_scale, clip_image=getattr(args, 'clip_image', False))
 
         avg_step_loss = batch_loss / args.gm_steps
         total_loss += avg_step_loss * N
@@ -432,7 +436,7 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
                     noise_method='constant_scale', noise_scale=0.1,
                     eval_plane=20,
                     bypass_lambda=0.0, bypass_gamma=30.0, bypass_alpha=0.0, use_amp=False,
-                    enable_struct=True, enable_percep=True, enable_phys=True):
+                    enable_struct=True, enable_percep=True, enable_phys=True, clip_image=False):
     """Val set의 모든 scene에 대해 특정 plane을 생성하고 평균 PSNR을 반환.
     
     val_loss와 달리 실제 이미지 생성 품질을 측정하므로,
@@ -500,7 +504,7 @@ def compute_val_psnr(model, dataset, device, gm_steps, gm_step_size,
 
                 use_noise = langevin_noise and (step < gm_steps - 1)
                 current_image = langevin_step(current_image, pred_grad, eta, use_noise,
-                                              noise_method, noise_scale)
+                                              noise_method, noise_scale, clip_image=clip_image)
 
         final_img = torch.clamp(current_image, 0, 1).cpu().squeeze()
         psnr_val = calculate_psnr(final_img, gt_cpu).item()
@@ -848,7 +852,8 @@ def main():
             eval_plane=20,
             bypass_lambda=args.bypass_lambda, bypass_gamma=args.bypass_gamma,
             bypass_alpha=bypass_alpha, use_amp=args.amp,
-            enable_struct=args.enable_struct, enable_percep=args.enable_percep, enable_phys=args.enable_phys
+            enable_struct=args.enable_struct, enable_percep=args.enable_percep, enable_phys=args.enable_phys,
+            clip_image=getattr(args, 'clip_image', False)
         )
         print(f"Val PSNR (plane 20 avg): {val_psnr:.2f} dB")
 
@@ -1042,7 +1047,7 @@ def final_generation_check(model, dataset, device, output_dir, args, ckpt_path, 
                 # 추론 시 마지막 스텝에서는 노이즈를 끌어서 깨끗한 결과 보장
                 use_noise = args.langevin_noise and (step < infer_steps - 1)
                 current_image = langevin_step(current_image, pred_grad, eta, use_noise,
-                                              args.noise_method, args.noise_scale)
+                                              args.noise_method, args.noise_scale, clip_image=getattr(args, 'clip_image', False))
 
         final_img = torch.clamp(current_image, 0, 1).cpu().squeeze().permute(1, 2, 0).numpy()
         gt_img = gt.cpu().squeeze().permute(1, 2, 0).numpy()

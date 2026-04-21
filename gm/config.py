@@ -83,6 +83,8 @@ def get_parser():
                         help='Langevin noise method: constant_scale (noise = scale * eta * z)')
     parser.add_argument('--noise_scale', type=float, default=0.1,
                         help='Noise scale factor for constant_scale method (default: 0.1)')
+    parser.add_argument('--clip_image', action='store_true',
+                        help='Use PGD-style clamping [0, 1] after each Langevin step')
 
     # Training-time Bypass (Stop-Gradient Sharp Prior)
     parser.add_argument('--train_bypass', action='store_true',

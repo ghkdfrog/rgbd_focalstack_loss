@@ -135,7 +135,7 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
                        noise_method='constant_scale', noise_scale=0.1,
                        infer_sharp=False, infer_sharp_lambda=5.0,
                        infer_sharp_gamma=30.0, infer_sharp_start=0.5, use_amp=False,
-                       enable_struct=True, enable_percep=True, enable_phys=True):
+                       enable_struct=True, enable_percep=True, enable_phys=True, clip_image=False):
     """한 장의 focal plane을 생성하고 PSNR, 히스토리, step별 PSNR/energy를 반환
 
     infer_sharp: True이면 inference-time sharpening 적용
@@ -210,7 +210,7 @@ def generate_one_plane(model, x, diopter, gt, device, gm_steps, gm_step_size,
 
             # 마지막 스텝에서는 노이즈 없이 깨끗하게 마무리
             noise = use_langevin_noise and (step < gm_steps - 1)
-            current_image = langevin_step(current_image, grad, eta, noise, noise_method, noise_scale)
+            current_image = langevin_step(current_image, grad, eta, noise, noise_method, noise_scale, clip_image=clip_image)
 
             # step별 PSNR + energy 기록
             with torch.no_grad():
@@ -408,7 +408,8 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
         'infer_sharp': args.infer_sharp,
         'infer_sharp_lambda': args.infer_sharp_lambda,
         'infer_sharp_gamma': args.infer_sharp_gamma,
-        'infer_sharp_start': args.infer_sharp_start
+        'infer_sharp_start': args.infer_sharp_start,
+        'clip_image': getattr(args, 'clip_image', False)
     }
     with open(os.path.join(out_subdir, 'infer_config.json'), 'w') as f:
         json.dump(infer_config, f, indent=2)
@@ -452,7 +453,8 @@ def run_inference_for_tag(tag, ckpt_path, args, saved_args, device,
             eta_min, eta_schedule, langevin_noise, noise_method, noise_scale,
             infer_sharp=args.infer_sharp, infer_sharp_lambda=args.infer_sharp_lambda,
             infer_sharp_gamma=args.infer_sharp_gamma, infer_sharp_start=args.infer_sharp_start, use_amp=use_amp,
-            enable_struct=enable_struct, enable_percep=enable_percep, enable_phys=enable_phys
+            enable_struct=enable_struct, enable_percep=enable_percep, enable_phys=enable_phys,
+            clip_image=getattr(args, 'clip_image', False)
         )
 
         all_step_data[p_idx] = step_psnr_history
