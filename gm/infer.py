@@ -540,6 +540,11 @@ def main():
     noise_method = args.noise_method if args.noise_method != 'constant_scale' else train_noise_method
     noise_scale = args.noise_scale if args.noise_scale != 0.1 else train_noise_scale
 
+    # clip_image: 학습 시 PGD clamping을 사용했다면 추론 시에도 반드시 적용해야 함
+    train_clip_image = saved_args.get('clip_image', False)
+    clip_image = args.clip_image or train_clip_image
+    args.clip_image = clip_image  # downstream에서 getattr(args, 'clip_image')로 참조
+
     single_scene_only = saved_args.get('single_scene_only', False)
 
     # ── Auto-enable infer_sharp if model was trained with bypass ──
@@ -576,6 +581,7 @@ def main():
         print(f"    start      : {args.infer_sharp_start} ({int(gm_steps * args.infer_sharp_start)}/{gm_steps} step)")
     print(f"  compile      : {args.compile} (mode: {args.compile_mode})")
     print(f"  amp          : {args.amp}")
+    print(f"  clip_image   : {clip_image}  (train was {train_clip_image})")
     print(f"{'='*50}\n")
 
     # 데이터셋
