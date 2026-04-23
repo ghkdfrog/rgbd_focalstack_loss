@@ -60,10 +60,13 @@ class CompositionalTargets(nn.Module):
         Returns: scalar total error (reduced by sum)
         """
         # lpips expects inputs in [-1, 1], our inputs are [0, 1]
-        x_pred_lpips = x_pred * 2.0 - 1.0
-        gt_lpips = gt * 2.0 - 1.0
+        x_pred_lpips = torch.clamp(x_pred * 2.0 - 1.0, -1.0, 1.0)
+        gt_lpips = torch.clamp(gt * 2.0 - 1.0, -1.0, 1.0)
         
-        lpips_err = self.lpips_net(x_pred_lpips, gt_lpips)
+        # Disable AMP for LPIPS to avoid NaN in mixed precision
+        with torch.cuda.amp.autocast(enabled=False):
+            lpips_err = self.lpips_net(x_pred_lpips.float(), gt_lpips.float())
+            
         return lpips_err.to(torch.float32).sum()
 
     def forward_phys(self, x_pred, gt, x_full, diopter):

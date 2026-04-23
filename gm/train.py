@@ -287,9 +287,9 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 z_s = torch.zeros_like(eng_gt_s)
                 
                 if getattr(args, 'enable_energy_anchor', False):
-                    loss_ea_s = args.lambda_struct * F.mse_loss(eng_gt_s, z_s, reduction='sum') if args.enable_struct else 0.0
-                    loss_ea_p = args.lambda_percep * F.mse_loss(eng_gt_p, z_s, reduction='sum') if args.enable_percep else 0.0
-                    loss_ea_ph = args.lambda_phys * F.mse_loss(eng_gt_ph, z_s, reduction='sum') if args.enable_phys else 0.0
+                    loss_ea_s = args.lambda_struct * F.mse_loss(eng_gt_s, z_s, reduction='mean') if args.enable_struct else 0.0
+                    loss_ea_p = args.lambda_percep * F.mse_loss(eng_gt_p, z_s, reduction='mean') if args.enable_percep else 0.0
+                    loss_ea_ph = args.lambda_phys * F.mse_loss(eng_gt_ph, z_s, reduction='mean') if args.enable_phys else 0.0
                 else:
                     loss_ea_s = loss_ea_p = loss_ea_ph = 0.0
                     
