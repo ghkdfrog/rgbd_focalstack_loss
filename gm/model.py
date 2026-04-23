@@ -1196,6 +1196,179 @@ class ResUNet(nn.Module):
             eng = self.fc(eng)
         return eng
 
+class UResNetFiLM(nn.Module):
+    """
+    SimpleResNetFiLM을 U-Net 구조로 확장한 모델.
+    - Compositional EBM (3-head) 완벽 호환
+    - CoC 기반 Sharp Prior 완벽 호환
+    - 각 해상도 레벨에 맞춰 CoC condition map을 리사이즈하여 SpatialFiLM 적용
+    """
+    def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
+                 base_channels=64, num_bottleneck_blocks=3,
+                 use_sharp_prior=False,
+                 sharp_lambda_learnable=False, sharp_gamma_learnable=False,
+                 activation='relu',
+                 sharp_lambda_init=10.0, sharp_gamma_init=30.0,
+                 compositional_ebm=False):
+        super(UResNetFiLM, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+        self.use_sharp_prior = use_sharp_prior
+        self.compositional_ebm = compositional_ebm
+
+        act_fn = nn.SiLU() if activation == 'silu' else nn.ReLU()
+        self.act = act_fn
+        bc = base_channels
+
+        # 입력 채널 결정: coc 모드면 7, spatial이면 8
+        in_ch = input_channels
+        if diopter_mode == 'spatial':
+            in_ch += 1
+
+        # ── 1. Stem (원본 해상도) ──
+        self.stem = nn.Conv2d(in_ch, bc, kernel_size=3, stride=1, padding=1)
+
+        # ── 2. Encoder ──
+        # Level 1 (원본 해상도)
+        self.enc1_block = FiLMResidualBlock(bc, activation=activation)
+        self.down1 = nn.Conv2d(bc, bc * 2, kernel_size=3, stride=2, padding=1)
+
+        # Level 2 (1/2 해상도)
+        self.enc2_block = FiLMResidualBlock(bc * 2, activation=activation)
+        self.down2 = nn.Conv2d(bc * 2, bc * 4, kernel_size=3, stride=2, padding=1)
+
+        # ── 3. Bottleneck (1/4 해상도) ──
+        self.bottleneck = nn.ModuleList([
+            FiLMResidualBlock(bc * 4, activation=activation) for _ in range(num_bottleneck_blocks)
+        ])
+
+        # ── 4. Decoder ──
+        # Up-Level 2 (1/2 해상도 복원)
+        self.up2 = nn.ConvTranspose2d(bc * 4, bc * 2, kernel_size=4, stride=2, padding=1)
+        self.dec2_fuse = nn.Conv2d(bc * 4, bc * 2, kernel_size=3, stride=1, padding=1)
+        self.dec2_block = FiLMResidualBlock(bc * 2, activation=activation)
+
+        # Up-Level 1 (원본 해상도 복원)
+        self.up1 = nn.ConvTranspose2d(bc * 2, bc, kernel_size=4, stride=2, padding=1)
+        self.dec1_fuse = nn.Conv2d(bc * 2, bc, kernel_size=3, stride=1, padding=1)
+        self.dec1_block = FiLMResidualBlock(bc, activation=activation)
+
+        # ── 5. Energy Heads ──
+        # U-Net을 거치면 최종 채널은 base_channels(bc)로 돌아옵니다.
+        if compositional_ebm:
+            if energy_head == 'conv1x1':
+                self.conv_energy_struct = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+                self.conv_energy_percep = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+                self.conv_energy_phys = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+            else:
+                self.fc_struct = nn.Linear(bc * 512 * 512, 1)
+                self.fc_percep = nn.Linear(bc * 512 * 512, 1)
+                self.fc_phys = nn.Linear(bc * 512 * 512, 1)
+        else:
+            if energy_head == 'conv1x1':
+                self.conv_energy = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+            else:
+                self.fc = nn.Linear(bc * 512 * 512, 1)
+
+        # ── 6. Sharp Prior 파라미터 ──
+        if use_sharp_prior:
+            if sharp_lambda_learnable:
+                self.sharp_lambda = nn.Parameter(torch.tensor(sharp_lambda_init))
+            else:
+                self.register_buffer('sharp_lambda', torch.tensor(sharp_lambda_init))
+
+            if sharp_gamma_learnable:
+                self.sharp_gamma = nn.Parameter(torch.tensor(sharp_gamma_init))
+            else:
+                self.register_buffer('sharp_gamma', torch.tensor(sharp_gamma_init))
+
+    def _compute_backbone(self, x, diopter):
+        """U-Net 백본 계산 및 피라미드 형태의 FiLM 적용"""
+        N, C, H, W = x.shape
+
+        rgb_in = x[:, :3, :, :]
+        y_pred = x[:, 4:7, :, :]
+
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            cond_map = x[:, 7:8, :, :]
+            x_input = x[:, :7, :, :]
+        else:
+            cond_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x_input = torch.cat([x, cond_map], dim=1)
+
+        # ── Stem ──
+        x_stem = self.act(self.stem(x_input))
+
+        # ── Encoder ──
+        # Level 1
+        skip1 = self.enc1_block(x_stem, cond_map)
+        x_d1 = self.act(self.down1(skip1))
+
+        # Level 2 (Condition map 리사이즈 적용)
+        cond_half = F.interpolate(cond_map, size=x_d1.shape[2:], mode='bilinear', align_corners=False)
+        skip2 = self.enc2_block(x_d1, cond_half)
+        x_d2 = self.act(self.down2(skip2))
+
+        # ── Bottleneck ──
+        x_bn = x_d2
+        cond_quarter = F.interpolate(cond_map, size=x_bn.shape[2:], mode='bilinear', align_corners=False)
+        for block in self.bottleneck:
+            x_bn = block(x_bn, cond_quarter)
+
+        # ── Decoder ──
+        # Up-Level 2
+        x_up2 = self.act(self.up2(x_bn))
+        x_up2 = torch.cat([x_up2, skip2], dim=1)
+        x_up2 = self.act(self.dec2_fuse(x_up2))
+        x_up2 = self.dec2_block(x_up2, cond_half)
+
+        # Up-Level 1
+        x_up1 = self.act(self.up1(x_up2))
+        x_up1 = torch.cat([x_up1, skip1], dim=1)
+        x_up1 = self.act(self.dec1_fuse(x_up1))
+        x_up1 = self.dec1_block(x_up1, cond_map)
+
+        # 최종 피처맵, 원본 condition map, 참조용 이미지 반환
+        return x_up1, cond_map, rgb_in, y_pred
+
+    def _apply_energy_head(self, feat, head_name):
+        """단일 에너지 헤드 적용 헬퍼 (compositional용)"""
+        if self.energy_head == 'conv1x1':
+            conv = getattr(self, f'conv_energy_{head_name}')
+            out = conv(feat)
+            return torch.sum(out, dim=(2, 3))
+        else:
+            fc = getattr(self, f'fc_{head_name}')
+            return fc(torch.flatten(feat, 1))
+
+    def forward(self, x, diopter):
+        feat, cond_map, rgb_in, y_pred = self._compute_backbone(x, diopter)
+
+        if self.compositional_ebm:
+            # 3-head 출력 (기존 SimpleResNetFiLM과 동일 구조)
+            eng_struct = self._apply_energy_head(feat, 'struct')
+            eng_percep = self._apply_energy_head(feat, 'percep')
+            eng_phys = self._apply_energy_head(feat, 'phys')
+            return eng_struct, eng_percep, eng_phys
+        else:
+            # 단일 헤드 출력
+            if self.energy_head == 'conv1x1':
+                out = self.conv_energy(feat)
+                eng = torch.sum(out, dim=(2, 3))
+            else:
+                eng = self.fc(torch.flatten(feat, 1))
+
+            # Sharp Prior 적용 (단일 헤드일 경우에만 페널티 부여, 원본 모델 로직과 동일)
+            if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+                coc_abs = torch.abs(cond_map)
+                w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
+                sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
+                    w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
+                )
+                eng = eng - sharp_penalty.unsqueeze(-1)
+
+            return eng
+
 
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""

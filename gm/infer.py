@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from gm.model import (SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, DWTResNetFiLM, ResUNet,
-                      SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet)
+                      SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, UResNetFiLM)
 from gm.config import parse_args
 from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
@@ -82,6 +82,20 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
         model = SimpleResNet(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, use_film=use_film, long_skip=long_skip, use_sharp_prior=sharp_prior, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init).to(device)
     elif arch == 'resnet_film':
         model = SimpleResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, use_sharp_prior=sharp_prior, sharp_lambda_learnable=sharp_lambda_learnable, sharp_gamma_learnable=sharp_gamma_learnable, activation=activation, sharp_lambda_init=sharp_lambda_init, sharp_gamma_init=sharp_gamma_init, compositional_ebm=compositional_ebm).to(device)
+    elif arch == 'uresnet_film':
+        model = UResNetFiLM(
+            diopter_mode=diopter_mode,
+            energy_head=energy_head,
+            base_channels=channels,
+            num_bottleneck_blocks=3,
+            use_sharp_prior=sharp_prior,
+            sharp_lambda_learnable=sharp_lambda_learnable,
+            sharp_gamma_learnable=sharp_gamma_learnable,
+            activation=activation,
+            sharp_lambda_init=sharp_lambda_init,
+            sharp_gamma_init=sharp_gamma_init,
+            compositional_ebm=compositional_ebm
+        ).to(device)
     elif arch == 'dwt_resnet_film':
         model = DWTResNetFiLM(diopter_mode=diopter_mode, energy_head=energy_head, num_blocks=4, channels=channels, long_skip=long_skip, activation=activation).to(device)
     elif arch == 'resunet':
