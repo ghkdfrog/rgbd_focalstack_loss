@@ -28,7 +28,7 @@ import lpips
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, DWTResNetFiLM, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, save_model_architecture
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, DWTResNetFiLM, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, UResNetFiLM, save_model_architecture
 from gm.config import parse_args, get_parser
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 from gm.compositional import CompositionalTargets
@@ -671,6 +671,21 @@ def main():
             num_blocks=4,
             channels=args.channels,
             long_skip=args.long_skip,
+            use_sharp_prior=args.sharp_prior,
+            sharp_lambda_learnable=args.sharp_lambda_learnable,
+            sharp_gamma_learnable=args.sharp_gamma_learnable,
+            activation=args.activation,
+            sharp_lambda_init=args.sharp_lambda,
+            sharp_gamma_init=args.sharp_gamma,
+            compositional_ebm=args.compositional_ebm
+        ).to(device)
+    elif args.arch == 'uresnet_film':
+        model = UResNetFiLM(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head,
+            base_channels=args.channels,      # channels 인자를 U-Net의 base_channels로 사용
+            num_bottleneck_blocks=3,          # 필요시 config 인자로 빼셔도 됩니다
             use_sharp_prior=args.sharp_prior,
             sharp_lambda_learnable=args.sharp_lambda_learnable,
             sharp_gamma_learnable=args.sharp_gamma_learnable,
