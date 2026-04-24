@@ -28,7 +28,7 @@ import lpips
 # Ensure parent directory is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
-from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, DWTResNetFiLM, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, UResNetFiLM, save_model_architecture
+from gm.model import SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, DWTResNetFiLM, ResUNet, SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, UResNetFiLM, UResNetHybrid, save_model_architecture
 from gm.config import parse_args, get_parser
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
 from gm.compositional import CompositionalTargets
@@ -544,7 +544,7 @@ def main():
         restore_keys = [
             'arch', 'diopter_mode', 'energy_head', 'channels',
             'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda_learnable', 'sharp_gamma_learnable', 'sharp_lambda', 'sharp_gamma',
-            'activation', 'interleave_rate',
+            'activation', 'interleave_rate', 'num_attn_heads',
             'epochs', 'batch_size', 'lr', 'weight_decay',
             'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise', 'noise_method', 'noise_scale',
             'train_bypass', 'bypass_lambda', 'bypass_gamma', 'bypass_warmup', 'bypass_ramp',
@@ -686,6 +686,22 @@ def main():
             energy_head=args.energy_head,
             base_channels=args.channels,      # channels 인자를 U-Net의 base_channels로 사용
             num_bottleneck_blocks=3,          # 필요시 config 인자로 빼셔도 됩니다
+            use_sharp_prior=args.sharp_prior,
+            sharp_lambda_learnable=args.sharp_lambda_learnable,
+            sharp_gamma_learnable=args.sharp_gamma_learnable,
+            activation=args.activation,
+            sharp_lambda_init=args.sharp_lambda,
+            sharp_gamma_init=args.sharp_gamma,
+            compositional_ebm=args.compositional_ebm
+        ).to(device)
+    elif args.arch == 'uresnet_hybrid':
+        model = UResNetHybrid(
+            input_channels=7,
+            diopter_mode=args.diopter_mode,
+            energy_head=args.energy_head,
+            base_channels=args.channels,
+            num_bottleneck_blocks=3,
+            num_attn_heads=args.num_attn_heads,
             use_sharp_prior=args.sharp_prior,
             sharp_lambda_learnable=args.sharp_lambda_learnable,
             sharp_gamma_learnable=args.sharp_gamma_learnable,
@@ -954,6 +970,7 @@ def main():
             'enable_struct': args.enable_struct,
             'enable_percep': args.enable_percep,
             'enable_phys': args.enable_phys,
+            'num_attn_heads': getattr(args, 'num_attn_heads', 8),
         }
 
         if args.save_every > 0 and epoch % args.save_every == 0:

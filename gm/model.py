@@ -1196,6 +1196,253 @@ class ResUNet(nn.Module):
             eng = self.fc(eng)
         return eng
 
+class ConditionEncoder(nn.Module):
+    """
+    원본 CoC 맵을 바틀넥 해상도로 압축하며 의미(Semantic) 특징을 추출합니다.
+    CoC 맵 (N, 1, H, W) → (N, out_channels, H/4, W/4)
+    Stride 2를 두 번 적용하여 1/4 해상도로 다운샘플합니다.
+    """
+    def __init__(self, in_channels=1, out_channels=256):
+        super(ConditionEncoder, self).__init__()
+        # 1/2 Downsample
+        self.conv1 = nn.Conv2d(in_channels, out_channels // 2, kernel_size=4, stride=2, padding=1)
+        # 1/4 Downsample (Bottleneck 해상도와 일치)
+        self.conv2 = nn.Conv2d(out_channels // 2, out_channels, kernel_size=4, stride=2, padding=1)
+        self.act = nn.SiLU()
+
+    def forward(self, coc_map):
+        # coc_map: (N, 1, H, W)
+        feat = self.act(self.conv1(coc_map))  # (N, C/2, H/2, W/2)
+        feat = self.act(self.conv2(feat))     # (N, C, H/4, W/4)
+        return feat  # (N, out_channels, H/4, W/4)
+
+
+class CrossAttentionResidualBlock(nn.Module):
+    """
+    메인 U-Net 피처(Query)와 Condition 피처(Key, Value)를 교차 결합합니다.
+    - Spatial 텐서 (B, C, H, W)를 Sequence 텐서 (B, H*W, C)로 변환하여 MHA에 입력.
+    - 연산 후 다시 (B, C, H, W)로 복원하여 Residual Add 적용.
+    """
+    def __init__(self, channels, num_heads=8):
+        super(CrossAttentionResidualBlock, self).__init__()
+        # Query용 로컬 피처 추출
+        self.conv_q = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+
+        # Cross Attention 모듈 (batch_first=True 사용)
+        self.attn = nn.MultiheadAttention(embed_dim=channels, num_heads=num_heads, batch_first=True)
+
+        # Attention 결과를 정제하는 Feed Forward
+        self.ffn = nn.Sequential(
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        )
+        self.norm1 = nn.GroupNorm(8, channels)
+        self.norm2 = nn.GroupNorm(8, channels)
+
+    def forward(self, x, cond_feat):
+        # x (Query 대상): (N, C, H, W)
+        # cond_feat (Key, Value 대상): (N, C, H, W)
+        B, C, H, W = x.shape
+
+        residual = x
+
+        # 1. Query 생성 및 Reshape
+        q_spatial = self.conv_q(self.norm1(x))  # (B, C, H, W)
+        q = q_spatial.view(B, C, -1).permute(0, 2, 1)  # (B, H*W, C)
+
+        # 2. Key, Value Reshape
+        kv = cond_feat.view(B, C, -1).permute(0, 2, 1)  # (B, H*W, C)
+
+        # 3. Cross Attention 연산
+        attn_out, _ = self.attn(query=q, key=kv, value=kv)  # (B, H*W, C)
+
+        # 4. Spatial 텐서로 복원
+        attn_out = attn_out.permute(0, 2, 1).view(B, C, H, W)  # (B, C, H, W)
+
+        # 5. FFN 및 Residual Add
+        x = residual + attn_out
+        x = x + self.ffn(self.norm2(x))
+
+        return x
+
+
+class UResNetHybrid(nn.Module):
+    """
+    UResNetFiLM 기반 하이브리드 모델.
+    - Encoder와 Decoder는 기존 FiLMResidualBlock을 사용 (SpatialFiLM 기반 CoC conditioning).
+    - Bottleneck 구간만 CrossAttentionResidualBlock을 사용.
+    - forward 시 원본 CoC 맵을 ConditionEncoder에 통과시켜 바틀넥용 cond_feat 추출.
+    - Compositional EBM (3-head) 완벽 호환
+    - CoC 기반 Sharp Prior 완벽 호환
+    """
+    def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
+                 base_channels=64, num_bottleneck_blocks=3, num_attn_heads=8,
+                 use_sharp_prior=False,
+                 sharp_lambda_learnable=False, sharp_gamma_learnable=False,
+                 activation='relu',
+                 sharp_lambda_init=10.0, sharp_gamma_init=30.0,
+                 compositional_ebm=False):
+        super(UResNetHybrid, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+        self.use_sharp_prior = use_sharp_prior
+        self.compositional_ebm = compositional_ebm
+
+        act_fn = nn.SiLU() if activation == 'silu' else nn.ReLU()
+        self.act = act_fn
+        bc = base_channels
+
+        # 입력 채널 결정: coc 모드면 7, spatial이면 8
+        in_ch = input_channels
+        if diopter_mode == 'spatial':
+            in_ch += 1
+
+        # ── 1. Stem (원본 해상도) ──
+        self.stem = nn.Conv2d(in_ch, bc, kernel_size=3, stride=1, padding=1)
+
+        # ── 2. Encoder ──
+        # Level 1 (원본 해상도)
+        self.enc1_block = FiLMResidualBlock(bc, activation=activation)
+        self.down1 = nn.Conv2d(bc, bc * 2, kernel_size=3, stride=2, padding=1)
+
+        # Level 2 (1/2 해상도)
+        self.enc2_block = FiLMResidualBlock(bc * 2, activation=activation)
+        self.down2 = nn.Conv2d(bc * 2, bc * 4, kernel_size=3, stride=2, padding=1)
+
+        # ── 3. Condition Encoder (Bottleneck용) ──
+        # 원본 CoC 맵을 바틀넥 해상도 + 채널에 맞춰 압축
+        self.cond_encoder = ConditionEncoder(in_channels=1, out_channels=bc * 4)
+
+        # ── 4. Bottleneck (Cross-Attention 적용) ──
+        self.bottleneck = nn.ModuleList([
+            CrossAttentionResidualBlock(channels=bc * 4, num_heads=num_attn_heads)
+            for _ in range(num_bottleneck_blocks)
+        ])
+
+        # ── 5. Decoder ──
+        # Up-Level 2 (1/2 해상도 복원)
+        self.up2 = nn.ConvTranspose2d(bc * 4, bc * 2, kernel_size=4, stride=2, padding=1)
+        self.dec2_fuse = nn.Conv2d(bc * 4, bc * 2, kernel_size=3, stride=1, padding=1)
+        self.dec2_block = FiLMResidualBlock(bc * 2, activation=activation)
+
+        # Up-Level 1 (원본 해상도 복원)
+        self.up1 = nn.ConvTranspose2d(bc * 2, bc, kernel_size=4, stride=2, padding=1)
+        self.dec1_fuse = nn.Conv2d(bc * 2, bc, kernel_size=3, stride=1, padding=1)
+        self.dec1_block = FiLMResidualBlock(bc, activation=activation)
+
+        # ── 6. Energy Heads ──
+        if compositional_ebm:
+            if energy_head == 'conv1x1':
+                self.conv_energy_struct = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+                self.conv_energy_percep = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+                self.conv_energy_phys = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+            else:
+                self.fc_struct = nn.Linear(bc * 512 * 512, 1)
+                self.fc_percep = nn.Linear(bc * 512 * 512, 1)
+                self.fc_phys = nn.Linear(bc * 512 * 512, 1)
+        else:
+            if energy_head == 'conv1x1':
+                self.conv_energy = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+            else:
+                self.fc = nn.Linear(bc * 512 * 512, 1)
+
+        # ── 7. Sharp Prior 파라미터 ──
+        if use_sharp_prior:
+            if sharp_lambda_learnable:
+                self.sharp_lambda = nn.Parameter(torch.tensor(sharp_lambda_init))
+            else:
+                self.register_buffer('sharp_lambda', torch.tensor(sharp_lambda_init))
+
+            if sharp_gamma_learnable:
+                self.sharp_gamma = nn.Parameter(torch.tensor(sharp_gamma_init))
+            else:
+                self.register_buffer('sharp_gamma', torch.tensor(sharp_gamma_init))
+
+    def _compute_backbone(self, x, diopter):
+        """U-Net 백본 계산: Encoder(FiLM) → Bottleneck(CrossAttention) → Decoder(FiLM)"""
+        N, C, H, W = x.shape
+
+        rgb_in = x[:, :3, :, :]
+        y_pred = x[:, 4:7, :, :]
+
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            cond_map = x[:, 7:8, :, :]
+            x_input = x[:, :7, :, :]
+        else:
+            cond_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x_input = torch.cat([x, cond_map], dim=1)
+
+        # ── Stem ──
+        x_stem = self.act(self.stem(x_input))
+
+        # ── Encoder ──
+        # Level 1
+        skip1 = self.enc1_block(x_stem, cond_map)
+        x_d1 = self.act(self.down1(skip1))
+
+        # Level 2 (Condition map 리사이즈 적용)
+        cond_half = F.interpolate(cond_map, size=x_d1.shape[2:], mode='bilinear', align_corners=False)
+        skip2 = self.enc2_block(x_d1, cond_half)
+        x_d2 = self.act(self.down2(skip2))
+
+        # ── Bottleneck: ConditionEncoder + Cross Attention ──
+        cond_feat_bn = self.cond_encoder(cond_map)  # (N, bc*4, H/4, W/4)
+        x_bn = x_d2
+        for block in self.bottleneck:
+            x_bn = block(x_bn, cond_feat_bn)
+
+        # ── Decoder ──
+        # Up-Level 2
+        x_up2 = self.act(self.up2(x_bn))
+        x_up2 = torch.cat([x_up2, skip2], dim=1)
+        x_up2 = self.act(self.dec2_fuse(x_up2))
+        x_up2 = self.dec2_block(x_up2, cond_half)
+
+        # Up-Level 1
+        x_up1 = self.act(self.up1(x_up2))
+        x_up1 = torch.cat([x_up1, skip1], dim=1)
+        x_up1 = self.act(self.dec1_fuse(x_up1))
+        x_up1 = self.dec1_block(x_up1, cond_map)
+
+        return x_up1, cond_map, rgb_in, y_pred
+
+    def _apply_energy_head(self, feat, head_name):
+        """단일 에너지 헤드 적용 헬퍼 (compositional용)"""
+        if self.energy_head == 'conv1x1':
+            conv = getattr(self, f'conv_energy_{head_name}')
+            out = conv(feat)
+            return torch.sum(out, dim=(2, 3))
+        else:
+            fc = getattr(self, f'fc_{head_name}')
+            return fc(torch.flatten(feat, 1))
+
+    def forward(self, x, diopter):
+        feat, cond_map, rgb_in, y_pred = self._compute_backbone(x, diopter)
+
+        if self.compositional_ebm:
+            eng_struct = self._apply_energy_head(feat, 'struct')
+            eng_percep = self._apply_energy_head(feat, 'percep')
+            eng_phys = self._apply_energy_head(feat, 'phys')
+            return eng_struct, eng_percep, eng_phys
+        else:
+            if self.energy_head == 'conv1x1':
+                out = self.conv_energy(feat)
+                eng = torch.sum(out, dim=(2, 3))
+            else:
+                eng = self.fc(torch.flatten(feat, 1))
+
+            if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+                coc_abs = torch.abs(cond_map)
+                w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
+                sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
+                    w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
+                )
+                eng = eng - sharp_penalty.unsqueeze(-1)
+
+            return eng
+
+
 class UResNetFiLM(nn.Module):
     """
     SimpleResNetFiLM을 U-Net 구조로 확장한 모델.
