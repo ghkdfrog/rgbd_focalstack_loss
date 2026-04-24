@@ -1199,22 +1199,25 @@ class ResUNet(nn.Module):
 class ConditionEncoder(nn.Module):
     """
     원본 CoC 맵을 바틀넥 해상도로 압축하며 의미(Semantic) 특징을 추출합니다.
-    CoC 맵 (N, 1, H, W) → (N, out_channels, H/4, W/4)
-    Stride 2를 두 번 적용하여 1/4 해상도로 다운샘플합니다.
+    CoC 맵 (N, 1, H, W) → (N, out_channels, H/8, W/8)
+    Stride 2를 세 번 적용하여 1/8 해상도로 다운샘플합니다.
     """
-    def __init__(self, in_channels=1, out_channels=256):
+    def __init__(self, in_channels=1, out_channels=512):
         super(ConditionEncoder, self).__init__()
         # 1/2 Downsample
-        self.conv1 = nn.Conv2d(in_channels, out_channels // 2, kernel_size=4, stride=2, padding=1)
-        # 1/4 Downsample (Bottleneck 해상도와 일치)
-        self.conv2 = nn.Conv2d(out_channels // 2, out_channels, kernel_size=4, stride=2, padding=1)
+        self.conv1 = nn.Conv2d(in_channels, out_channels // 4, kernel_size=4, stride=2, padding=1)
+        # 1/4 Downsample
+        self.conv2 = nn.Conv2d(out_channels // 4, out_channels // 2, kernel_size=4, stride=2, padding=1)
+        # 1/8 Downsample (Bottleneck 해상도와 일치)
+        self.conv3 = nn.Conv2d(out_channels // 2, out_channels, kernel_size=4, stride=2, padding=1)
         self.act = nn.SiLU()
 
     def forward(self, coc_map):
         # coc_map: (N, 1, H, W)
-        feat = self.act(self.conv1(coc_map))  # (N, C/2, H/2, W/2)
-        feat = self.act(self.conv2(feat))     # (N, C, H/4, W/4)
-        return feat  # (N, out_channels, H/4, W/4)
+        feat = self.act(self.conv1(coc_map))  # (N, C/4, H/2, W/2)
+        feat = self.act(self.conv2(feat))     # (N, C/2, H/4, W/4)
+        feat = self.act(self.conv3(feat))     # (N, C, H/8, W/8)
+        return feat  # (N, out_channels, H/8, W/8)
 
 
 class CrossAttentionResidualBlock(nn.Module):
@@ -1269,12 +1272,25 @@ class CrossAttentionResidualBlock(nn.Module):
 
 class UResNetHybrid(nn.Module):
     """
-    UResNetFiLM 기반 하이브리드 모델.
+    UResNetFiLM 기반 하이브리드 모델 (3-Level U-Net + Cross-Attention Bottleneck).
     - Encoder와 Decoder는 기존 FiLMResidualBlock을 사용 (SpatialFiLM 기반 CoC conditioning).
     - Bottleneck 구간만 CrossAttentionResidualBlock을 사용.
-    - forward 시 원본 CoC 맵을 ConditionEncoder에 통과시켜 바틀넥용 cond_feat 추출.
+    - 3-Level 다운샘플로 바틀넥 해상도를 1/8로 축소 → Attention 메모리 16배 절감.
+      512×512 입력 기준: 64×64 = 4,096 토큰 (vs 1/4의 16,384 토큰)
+    - forward 시 원본 CoC 맵을 ConditionEncoder(1/8)에 통과시켜 바틀넥용 cond_feat 추출.
     - Compositional EBM (3-head) 완벽 호환
     - CoC 기반 Sharp Prior 완벽 호환
+
+    채널 흐름 (base_channels=64 기준):
+        Stem: 7ch → 64ch (H)
+        Enc1: 64ch (H) → Down → 128ch (H/2)
+        Enc2: 128ch (H/2) → Down → 256ch (H/4)
+        Enc3: 256ch (H/4) → Down → 512ch (H/8)
+        CondEncoder: CoC 1ch (H) → 512ch (H/8)
+        Bottleneck CrossAttn: 512ch (H/8)
+        Dec3: 512→256ch (H/4)
+        Dec2: 256→128ch (H/2)
+        Dec1: 128→64ch (H)
     """
     def __init__(self, input_channels=7, diopter_mode='coc', energy_head='fc',
                  base_channels=64, num_bottleneck_blocks=3, num_attn_heads=8,
@@ -1302,33 +1318,41 @@ class UResNetHybrid(nn.Module):
         self.stem = nn.Conv2d(in_ch, bc, kernel_size=3, stride=1, padding=1)
 
         # ── 2. Encoder ──
-        # Level 1 (원본 해상도)
+        # Level 1 (원본 해상도 H)
         self.enc1_block = FiLMResidualBlock(bc, activation=activation)
         self.down1 = nn.Conv2d(bc, bc * 2, kernel_size=3, stride=2, padding=1)
 
-        # Level 2 (1/2 해상도)
+        # Level 2 (1/2 해상도 H/2)
         self.enc2_block = FiLMResidualBlock(bc * 2, activation=activation)
         self.down2 = nn.Conv2d(bc * 2, bc * 4, kernel_size=3, stride=2, padding=1)
 
-        # ── 3. Condition Encoder (Bottleneck용) ──
-        # 원본 CoC 맵을 바틀넥 해상도 + 채널에 맞춰 압축
-        self.cond_encoder = ConditionEncoder(in_channels=1, out_channels=bc * 4)
+        # Level 3 (1/4 해상도 H/4)
+        self.enc3_block = FiLMResidualBlock(bc * 4, activation=activation)
+        self.down3 = nn.Conv2d(bc * 4, bc * 8, kernel_size=3, stride=2, padding=1)
 
-        # ── 4. Bottleneck (Cross-Attention 적용) ──
+        # ── 3. Condition Encoder (Bottleneck용, 1/8 해상도) ──
+        self.cond_encoder = ConditionEncoder(in_channels=1, out_channels=bc * 8)
+
+        # ── 4. Bottleneck (Cross-Attention 적용, 1/8 해상도 H/8) ──
         self.bottleneck = nn.ModuleList([
-            CrossAttentionResidualBlock(channels=bc * 4, num_heads=num_attn_heads)
+            CrossAttentionResidualBlock(channels=bc * 8, num_heads=num_attn_heads)
             for _ in range(num_bottleneck_blocks)
         ])
 
         # ── 5. Decoder ──
+        # Up-Level 3 (1/4 해상도 복원)
+        self.up3 = nn.ConvTranspose2d(bc * 8, bc * 4, kernel_size=4, stride=2, padding=1)
+        self.dec3_fuse = nn.Conv2d(bc * 8, bc * 4, kernel_size=3, stride=1, padding=1)  # cat(up3 + skip3)
+        self.dec3_block = FiLMResidualBlock(bc * 4, activation=activation)
+
         # Up-Level 2 (1/2 해상도 복원)
         self.up2 = nn.ConvTranspose2d(bc * 4, bc * 2, kernel_size=4, stride=2, padding=1)
-        self.dec2_fuse = nn.Conv2d(bc * 4, bc * 2, kernel_size=3, stride=1, padding=1)
+        self.dec2_fuse = nn.Conv2d(bc * 4, bc * 2, kernel_size=3, stride=1, padding=1)  # cat(up2 + skip2)
         self.dec2_block = FiLMResidualBlock(bc * 2, activation=activation)
 
         # Up-Level 1 (원본 해상도 복원)
         self.up1 = nn.ConvTranspose2d(bc * 2, bc, kernel_size=4, stride=2, padding=1)
-        self.dec1_fuse = nn.Conv2d(bc * 2, bc, kernel_size=3, stride=1, padding=1)
+        self.dec1_fuse = nn.Conv2d(bc * 2, bc, kernel_size=3, stride=1, padding=1)  # cat(up1 + skip1)
         self.dec1_block = FiLMResidualBlock(bc, activation=activation)
 
         # ── 6. Energy Heads ──
@@ -1360,7 +1384,7 @@ class UResNetHybrid(nn.Module):
                 self.register_buffer('sharp_gamma', torch.tensor(sharp_gamma_init))
 
     def _compute_backbone(self, x, diopter):
-        """U-Net 백본 계산: Encoder(FiLM) → Bottleneck(CrossAttention) → Decoder(FiLM)"""
+        """U-Net 백본 계산: Encoder(FiLM)×3 → Bottleneck(CrossAttention) → Decoder(FiLM)×3"""
         N, C, H, W = x.shape
 
         rgb_in = x[:, :3, :, :]
@@ -1377,29 +1401,40 @@ class UResNetHybrid(nn.Module):
         x_stem = self.act(self.stem(x_input))
 
         # ── Encoder ──
-        # Level 1
+        # Level 1 (H)
         skip1 = self.enc1_block(x_stem, cond_map)
         x_d1 = self.act(self.down1(skip1))
 
-        # Level 2 (Condition map 리사이즈 적용)
+        # Level 2 (H/2)
         cond_half = F.interpolate(cond_map, size=x_d1.shape[2:], mode='bilinear', align_corners=False)
         skip2 = self.enc2_block(x_d1, cond_half)
         x_d2 = self.act(self.down2(skip2))
 
-        # ── Bottleneck: ConditionEncoder + Cross Attention ──
-        cond_feat_bn = self.cond_encoder(cond_map)  # (N, bc*4, H/4, W/4)
-        x_bn = x_d2
+        # Level 3 (H/4)
+        cond_quarter = F.interpolate(cond_map, size=x_d2.shape[2:], mode='bilinear', align_corners=False)
+        skip3 = self.enc3_block(x_d2, cond_quarter)
+        x_d3 = self.act(self.down3(skip3))
+
+        # ── Bottleneck: ConditionEncoder(1/8) + Cross Attention ──
+        cond_feat_bn = self.cond_encoder(cond_map)  # (N, bc*8, H/8, W/8)
+        x_bn = x_d3
         for block in self.bottleneck:
             x_bn = block(x_bn, cond_feat_bn)
 
         # ── Decoder ──
-        # Up-Level 2
-        x_up2 = self.act(self.up2(x_bn))
+        # Up-Level 3 (H/4 복원)
+        x_up3 = self.act(self.up3(x_bn))
+        x_up3 = torch.cat([x_up3, skip3], dim=1)
+        x_up3 = self.act(self.dec3_fuse(x_up3))
+        x_up3 = self.dec3_block(x_up3, cond_quarter)
+
+        # Up-Level 2 (H/2 복원)
+        x_up2 = self.act(self.up2(x_up3))
         x_up2 = torch.cat([x_up2, skip2], dim=1)
         x_up2 = self.act(self.dec2_fuse(x_up2))
         x_up2 = self.dec2_block(x_up2, cond_half)
 
-        # Up-Level 1
+        # Up-Level 1 (H 복원)
         x_up1 = self.act(self.up1(x_up2))
         x_up1 = torch.cat([x_up1, skip1], dim=1)
         x_up1 = self.act(self.dec1_fuse(x_up1))
