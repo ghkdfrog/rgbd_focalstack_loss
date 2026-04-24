@@ -810,6 +810,26 @@ def main():
         optimizer, mode='min', factor=0.5, patience=5
     )
 
+    if args.resume and 'ckpt' in locals():
+        if 'optimizer_state_dict' in ckpt:
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            cli_lr_passed = any(arg == '--lr' or arg.startswith('--lr=') for arg in sys.argv)
+            if cli_lr_passed:
+                for param_group in optimizer.param_groups:
+                    param_group['lr'] = args.lr
+                print(f"Restored optimizer state, but OVERRODE learning rate to {args.lr} from CLI")
+            else:
+                restored_lr = optimizer.param_groups[0]['lr']
+                print(f"Restored optimizer state. Learning rate is now {restored_lr}")
+                
+        if 'scheduler_state_dict' in ckpt:
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            print("Restored scheduler state.")
+            
+        if 'scaler_state_dict' in ckpt and args.amp:
+            scaler.load_state_dict(ckpt['scaler_state_dict'])
+            print("Restored AMP scaler state.")
+
     writer = None
     if HAS_TB:
         writer = SummaryWriter(os.path.join(output_dir, 'logs'))
@@ -902,6 +922,8 @@ def main():
             'epoch': epoch,
             'model_state_dict': state_dict,
             'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'scaler_state_dict': scaler.state_dict() if args.amp else None,
             'arch': args.arch,
             'diopter_mode': args.diopter_mode,
             'energy_head': args.energy_head,
