@@ -845,7 +845,7 @@ def main():
             scheduler.load_state_dict(ckpt['scheduler_state_dict'])
             print("Restored scheduler state.")
             
-        if 'scaler_state_dict' in ckpt and args.amp:
+        if 'scaler_state_dict' in ckpt and args.amp and ckpt['scaler_state_dict'] is not None:
             scaler.load_state_dict(ckpt['scaler_state_dict'])
             print("Restored AMP scaler state.")
 
