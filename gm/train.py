@@ -545,8 +545,11 @@ def main():
             'arch', 'diopter_mode', 'energy_head', 'channels',
             'use_film', 'long_skip', 'sharp_prior', 'sharp_lambda_learnable', 'sharp_gamma_learnable', 'sharp_lambda', 'sharp_gamma',
             'activation', 'interleave_rate', 'num_attn_heads',
-            'epochs', 'batch_size', 'lr', 'weight_decay',
+            # Execution optimization
+            'compile', 'compile_mode', 'amp',
+            'epochs', 'batch_size', 'lr', 'weight_decay', 'num_workers',
             'gm_steps', 'gm_step_size', 'eta_schedule', 'eta_min', 'langevin_noise', 'noise_method', 'noise_scale',
+            'clip_image',
             'train_bypass', 'bypass_lambda', 'bypass_gamma', 'bypass_warmup', 'bypass_ramp',
             'enable_energy_dist', 'weight_energy_dist', 'energy_dist_scale', 'enable_energy_anchor', 'weight_energy_anchor',
             'single_scene_only', 'num_scenes', 'unmatch_ratio', 'save_every',
