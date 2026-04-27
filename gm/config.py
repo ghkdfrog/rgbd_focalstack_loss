@@ -21,7 +21,7 @@ def get_parser():
     # Model
     parser.add_argument('--arch', type=str, default='simple',
                         choices=['simple', 'deep', 'stride', 'resnet', 'resnet_film', 'uresnet_film',
-                                 'uresnet_hybrid',
+                                 'uresnet_hybrid', 'uresnet_fno',
                                  'dwt_resnet_film', 'resunet', 
                                  'convnext', 'convnext_unet', 'dilated', 'interleave_resnet'],
                         help='Model architecture')
@@ -54,6 +54,8 @@ def get_parser():
                         help='Activation function: relu (default) or silu')
     parser.add_argument('--num_attn_heads', type=int, default=8,
                         help='Number of attention heads for Cross-Attention bottleneck (uresnet_hybrid only, default: 8)')
+    parser.add_argument('--bottleneck_modes', type=int, default=16,
+                        help='Number of Fourier modes for FNO bottleneck (uresnet_fno only, default: 16)')
 
     # Execution optimization
     parser.add_argument('--compile', action='store_true',

@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from gm.model import (SimpleCNN, SimpleCNNDeep, SimpleCNNStride, SimpleResNet, SimpleResNetFiLM, DWTResNetFiLM, ResUNet,
-                      SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, UResNetFiLM, UResNetHybrid)
+                      SimpleConvNeXt, ConvNeXtUNet, DilatedNet, InterleaveResNet, UResNetFiLM, UResNetHybrid, UResNetFNO)
 from gm.config import parse_args
 from gm.train import get_eta, langevin_step
 from dataset_focal import FocalDataset, DP_FOCAL, calculate_psnr
@@ -104,6 +104,22 @@ def load_model_from_ckpt(ckpt_path, diopter_mode, energy_head, device, arch='sim
             base_channels=channels,
             num_bottleneck_blocks=3,
             num_attn_heads=num_attn_heads,
+            use_sharp_prior=sharp_prior,
+            sharp_lambda_learnable=sharp_lambda_learnable,
+            sharp_gamma_learnable=sharp_gamma_learnable,
+            activation=activation,
+            sharp_lambda_init=sharp_lambda_init,
+            sharp_gamma_init=sharp_gamma_init,
+            compositional_ebm=compositional_ebm
+        ).to(device)
+    elif arch == 'uresnet_fno':
+        bottleneck_modes = ckpt.get('bottleneck_modes', 16)
+        model = UResNetFNO(
+            diopter_mode=diopter_mode,
+            energy_head=energy_head,
+            base_channels=channels,
+            num_bottleneck_blocks=3,
+            bottleneck_modes=bottleneck_modes,
             use_sharp_prior=sharp_prior,
             sharp_lambda_learnable=sharp_lambda_learnable,
             sharp_gamma_learnable=sharp_gamma_learnable,

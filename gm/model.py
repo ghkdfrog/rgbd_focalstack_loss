@@ -1652,6 +1652,291 @@ class UResNetFiLM(nn.Module):
             return eng
 
 
+# ──────────────────────────────────────────────────────────────
+# AMP-Safe Spectral Convolution (FNO Core)
+# ──────────────────────────────────────────────────────────────
+class SpectralConv2d(nn.Module):
+    """AMP-safe Fourier Neural Operator 2D 레이어.
+
+    입력을 rfft2로 주파수 도메인 변환 → 복소수 가중치로 채널 믹싱 → irfft2로 복원.
+    float16 환경에서 FFT 에러를 방지하기 위해 연산 전 float32로 강제 캐스팅.
+
+    주파수 도메인에서 양수·음수 주파수 대역 모두를 처리합니다:
+    - dim1(높이): [0:modes1] (양수 주파수) + [-modes1:] (음수 주파수)
+    - dim2(너비): [0:modes2] (rfft2는 양수 주파수만 반환)
+    """
+    def __init__(self, in_channels, out_channels, modes1, modes2):
+        super(SpectralConv2d, self).__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.modes1 = modes1
+        self.modes2 = modes2
+
+        scale = 1.0 / (in_channels * out_channels)
+        # 양수 주파수 대역 가중치
+        self.w1_real = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2))
+        self.w1_imag = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2))
+        # 음수 주파수 대역 가중치
+        self.w2_real = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2))
+        self.w2_imag = nn.Parameter(scale * torch.randn(in_channels, out_channels, modes1, modes2))
+
+    def _complex_mul(self, x_hat, w_real, w_imag):
+        """복소수 채널 믹싱: einsum (B,Cin,M1,M2) × (Cin,Cout,M1,M2) → (B,Cout,M1,M2)"""
+        w = torch.complex(w_real, w_imag)
+        return torch.einsum("bimn,iomn->bomn", x_hat, w)
+
+    def forward(self, x):
+        orig_dtype = x.dtype
+        x = x.float()  # AMP safety: FFT는 float32 필수
+
+        B, C, H, W = x.shape
+
+        # 2D Real FFT → (B, C, H, W//2+1) complex
+        x_hat = torch.fft.rfft2(x)
+
+        out_hat = torch.zeros(B, self.out_channels, H, W // 2 + 1,
+                              dtype=torch.cfloat, device=x.device)
+
+        # 양수 주파수 대역 (상단 rows)
+        out_hat[:, :, :self.modes1, :self.modes2] = self._complex_mul(
+            x_hat[:, :, :self.modes1, :self.modes2], self.w1_real, self.w1_imag)
+
+        # 음수 주파수 대역 (하단 rows)
+        out_hat[:, :, -self.modes1:, :self.modes2] = self._complex_mul(
+            x_hat[:, :, -self.modes1:, :self.modes2], self.w2_real, self.w2_imag)
+
+        # Inverse Real FFT → 공간 도메인 복귀
+        out = torch.fft.irfft2(out_hat, s=(H, W))
+        return out.to(orig_dtype)
+
+
+# ──────────────────────────────────────────────────────────────
+# FNO + FiLM Residual Block
+# ──────────────────────────────────────────────────────────────
+class FNOFiLMResidualBlock(nn.Module):
+    """Global FNO + Local Conv 병렬 브랜치 + SpatialFiLM 잔차 블록.
+
+    구조:
+        Input ─┬── SpectralConv2d (Global FNO) ──────────┐
+               │                                          ├─ Add → SpatialFiLM(cond=1ch) → + Input → Act → Output
+               └── Conv3x3 → Act → Conv3x3 (Local path) ─┘
+
+    - Global FNO: FFT를 통해 공간 제약 없는 글로벌 수용 영역 확보, 다중 주파수 피처 뱅크 생성
+    - Local Conv: 3x3 커널로 로컬 텍스처/엣지 특징 보존
+    - SpatialFiLM: 픽셀별 CoC 맵을 참조하여 필요한 주파수 대역만 선택적 활성화/억제
+    """
+    def __init__(self, channels, modes1=16, modes2=16, activation='relu'):
+        super(FNOFiLMResidualBlock, self).__init__()
+        # Global branch: FFT-based spectral convolution
+        self.spectral = SpectralConv2d(channels, channels, modes1, modes2)
+        # Local branch: 2-layer 3x3 Conv
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        # FiLM conditioning
+        self.film = SpatialFiLM(condition_channels=1, feature_channels=channels)
+        self.act = nn.SiLU() if activation == 'silu' else nn.ReLU()
+
+    def forward(self, x, condition_map):
+        residual = x
+        # Parallel branches
+        global_feat = self.spectral(x)                         # Global FNO
+        local_feat = self.conv2(self.act(self.conv1(x)))       # Local Conv
+        # Fusion + FiLM + Residual
+        fused = global_feat + local_feat
+        fused = self.film(fused, condition_map)
+        return self.act(fused + residual)
+
+
+# ──────────────────────────────────────────────────────────────
+# UResNetFNO: U-Net + FNO+FiLM Bottleneck
+# ──────────────────────────────────────────────────────────────
+class UResNetFNO(nn.Module):
+    """UResNetFiLM 구조 기반, 바틀넥에 FNO+FiLM 하이브리드 블록 적용.
+
+    설계 의도:
+    - Encoder/Decoder: FiLMResidualBlock (SpatialFiLM CoC conditioning)
+    - Bottleneck: FNOFiLMResidualBlock (SpectralConv2d + Local Conv + SpatialFiLM)
+      → FFT 글로벌 수용 영역으로 다중 주파수 피처 뱅크 생성
+      → 픽셀별 CoC 맵으로 필요한 주파수 대역만 선택
+      → H/4 해상도에서만 적용하여 FFT 연산 비용 최소화
+    - ConditionEncoder 불필요: 원본 CoC 맵을 F.interpolate로 직접 다운샘플
+    - Compositional EBM (3-head) 호환
+    - CoC 기반 Sharp Prior 호환
+
+    채널 흐름 (base_channels=64 기준):
+        Stem:  7ch → 64ch  (H)
+        Enc1:  64ch → Down → 128ch  (H/2)
+        Enc2:  128ch → Down → 256ch  (H/4)
+        Bottleneck FNO+FiLM: 256ch  (H/4)
+        Dec2:  256→128ch  (H/2) + skip2
+        Dec1:  128→64ch   (H)   + skip1
+        Head:  64ch → energy
+    """
+    def __init__(self, input_channels=7, diopter_mode='coc', energy_head='conv1x1',
+                 base_channels=64, num_bottleneck_blocks=3,
+                 bottleneck_modes=16,
+                 use_sharp_prior=False,
+                 sharp_lambda_learnable=False, sharp_gamma_learnable=False,
+                 activation='relu',
+                 sharp_lambda_init=10.0, sharp_gamma_init=30.0,
+                 compositional_ebm=False):
+        super(UResNetFNO, self).__init__()
+        self.diopter_mode = diopter_mode
+        self.energy_head = energy_head
+        self.use_sharp_prior = use_sharp_prior
+        self.compositional_ebm = compositional_ebm
+
+        act_fn = nn.SiLU() if activation == 'silu' else nn.ReLU()
+        self.act = act_fn
+        bc = base_channels
+
+        # 입력 채널 결정: coc 모드면 7, spatial이면 8
+        in_ch = input_channels
+        if diopter_mode == 'spatial':
+            in_ch += 1
+
+        # ── 1. Stem (원본 해상도) ──
+        self.stem = nn.Conv2d(in_ch, bc, kernel_size=3, stride=1, padding=1)
+
+        # ── 2. Encoder ──
+        # Level 1 (원본 해상도)
+        self.enc1_block = FiLMResidualBlock(bc, activation=activation)
+        self.down1 = nn.Conv2d(bc, bc * 2, kernel_size=3, stride=2, padding=1)
+
+        # Level 2 (1/2 해상도)
+        self.enc2_block = FiLMResidualBlock(bc * 2, activation=activation)
+        self.down2 = nn.Conv2d(bc * 2, bc * 4, kernel_size=3, stride=2, padding=1)
+
+        # ── 3. Bottleneck: FNO+FiLM (1/4 해상도) ──
+        self.bottleneck = nn.ModuleList([
+            FNOFiLMResidualBlock(bc * 4, modes1=bottleneck_modes, modes2=bottleneck_modes, activation=activation)
+            for _ in range(num_bottleneck_blocks)
+        ])
+
+        # ── 4. Decoder ──
+        # Up-Level 2 (1/2 해상도 복원)
+        self.up2 = nn.ConvTranspose2d(bc * 4, bc * 2, kernel_size=4, stride=2, padding=1)
+        self.dec2_fuse = nn.Conv2d(bc * 4, bc * 2, kernel_size=3, stride=1, padding=1)
+        self.dec2_block = FiLMResidualBlock(bc * 2, activation=activation)
+
+        # Up-Level 1 (원본 해상도 복원)
+        self.up1 = nn.ConvTranspose2d(bc * 2, bc, kernel_size=4, stride=2, padding=1)
+        self.dec1_fuse = nn.Conv2d(bc * 2, bc, kernel_size=3, stride=1, padding=1)
+        self.dec1_block = FiLMResidualBlock(bc, activation=activation)
+
+        # ── 5. Energy Heads ──
+        if compositional_ebm:
+            if energy_head == 'conv1x1':
+                self.conv_energy_struct = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+                self.conv_energy_percep = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+                self.conv_energy_phys = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+            else:
+                self.fc_struct = nn.Linear(bc * 512 * 512, 1)
+                self.fc_percep = nn.Linear(bc * 512 * 512, 1)
+                self.fc_phys = nn.Linear(bc * 512 * 512, 1)
+        else:
+            if energy_head == 'conv1x1':
+                self.conv_energy = nn.Conv2d(bc, 1, kernel_size=1, stride=1, padding=0)
+            else:
+                self.fc = nn.Linear(bc * 512 * 512, 1)
+
+        # ── 6. Sharp Prior 파라미터 ──
+        if use_sharp_prior:
+            if sharp_lambda_learnable:
+                self.sharp_lambda = nn.Parameter(torch.tensor(sharp_lambda_init))
+            else:
+                self.register_buffer('sharp_lambda', torch.tensor(sharp_lambda_init))
+
+            if sharp_gamma_learnable:
+                self.sharp_gamma = nn.Parameter(torch.tensor(sharp_gamma_init))
+            else:
+                self.register_buffer('sharp_gamma', torch.tensor(sharp_gamma_init))
+
+    def _compute_backbone(self, x, diopter):
+        """U-Net 백본: Encoder(FiLM) → Bottleneck(FNO+FiLM) → Decoder(FiLM)"""
+        N, C, H, W = x.shape
+
+        rgb_in = x[:, :3, :, :]
+        y_pred = x[:, 4:7, :, :]
+
+        if self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+            cond_map = x[:, 7:8, :, :]
+            x_input = x[:, :7, :, :]
+        else:
+            cond_map = diopter.view(N, 1, 1, 1).expand(N, 1, H, W)
+            x_input = torch.cat([x, cond_map], dim=1)
+
+        # ── Stem ──
+        x_stem = self.act(self.stem(x_input))
+
+        # ── Encoder ──
+        # Level 1
+        skip1 = self.enc1_block(x_stem, cond_map)
+        x_d1 = self.act(self.down1(skip1))
+
+        # Level 2
+        cond_half = F.interpolate(cond_map, size=x_d1.shape[2:], mode='bilinear', align_corners=False)
+        skip2 = self.enc2_block(x_d1, cond_half)
+        x_d2 = self.act(self.down2(skip2))
+
+        # ── Bottleneck: FNO+FiLM ──
+        x_bn = x_d2
+        cond_quarter = F.interpolate(cond_map, size=x_bn.shape[2:], mode='bilinear', align_corners=False)
+        for block in self.bottleneck:
+            x_bn = block(x_bn, cond_quarter)
+
+        # ── Decoder ──
+        # Up-Level 2
+        x_up2 = self.act(self.up2(x_bn))
+        x_up2 = torch.cat([x_up2, skip2], dim=1)
+        x_up2 = self.act(self.dec2_fuse(x_up2))
+        x_up2 = self.dec2_block(x_up2, cond_half)
+
+        # Up-Level 1
+        x_up1 = self.act(self.up1(x_up2))
+        x_up1 = torch.cat([x_up1, skip1], dim=1)
+        x_up1 = self.act(self.dec1_fuse(x_up1))
+        x_up1 = self.dec1_block(x_up1, cond_map)
+
+        return x_up1, cond_map, rgb_in, y_pred
+
+    def _apply_energy_head(self, feat, head_name):
+        """단일 에너지 헤드 적용 헬퍼 (compositional용)"""
+        if self.energy_head == 'conv1x1':
+            conv = getattr(self, f'conv_energy_{head_name}')
+            out = conv(feat)
+            return torch.sum(out, dim=(2, 3))
+        else:
+            fc = getattr(self, f'fc_{head_name}')
+            return fc(torch.flatten(feat, 1))
+
+    def forward(self, x, diopter):
+        feat, cond_map, rgb_in, y_pred = self._compute_backbone(x, diopter)
+
+        if self.compositional_ebm:
+            eng_struct = self._apply_energy_head(feat, 'struct')
+            eng_percep = self._apply_energy_head(feat, 'percep')
+            eng_phys = self._apply_energy_head(feat, 'phys')
+            return eng_struct, eng_percep, eng_phys
+        else:
+            if self.energy_head == 'conv1x1':
+                out = self.conv_energy(feat)
+                eng = torch.sum(out, dim=(2, 3))
+            else:
+                eng = self.fc(torch.flatten(feat, 1))
+
+            # Sharp Prior
+            if self.use_sharp_prior and self.diopter_mode in ['coc', 'coc_signed', 'coc_abs']:
+                coc_abs = torch.abs(cond_map)
+                w = torch.exp(-torch.abs(self.sharp_gamma) * coc_abs)
+                sharp_penalty = 0.5 * torch.abs(self.sharp_lambda) * torch.sum(
+                    w * (y_pred - rgb_in) ** 2, dim=(1, 2, 3)
+                )
+                eng = eng - sharp_penalty.unsqueeze(-1)
+
+            return eng
+
+
 def save_model_architecture(model, save_path, args=None):
     """모델 구조와 파라미터 수를 .txt 파일로 저장"""
     lines = []
