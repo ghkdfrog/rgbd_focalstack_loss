@@ -128,6 +128,8 @@ def train_epoch(model, loader, optimizer, device, epoch,
     # Optional ComposMetrics Tracking
     comp_metrics = {
         'loss_struct': 0.0, 'loss_percep': 0.0, 'loss_phys': 0.0,
+        'phys_blur_edge': 0.0, 'phys_occlusion': 0.0,
+        'phys_energy_conserv': 0.0, 'phys_bokeh': 0.0,
         'eanchor_struct': 0.0, 'eanchor_percep': 0.0, 'eanchor_phys': 0.0,
     }
     
@@ -211,9 +213,12 @@ def train_epoch(model, loader, optimizer, device, epoch,
                 if args.enable_phys:
                     x_for_tgt_phys = current_image.detach().clone().requires_grad_(True)
                     with torch.cuda.amp.autocast(enabled=use_amp):
-                        err_phys = comp_targets.forward_phys(x_for_tgt_phys, gt, x, diopter)
+                        err_phys, phys_sub = comp_targets.forward_phys(x_for_tgt_phys, gt, x, diopter)
                     if err_phys.item() > 0:
                         tgt_grad_phys = -torch.autograd.grad(err_phys, x_for_tgt_phys, create_graph=False)[0].detach()
+                    # Accumulate physical sub-losses for logging
+                    for k, v in phys_sub.items():
+                        comp_metrics[f'phys_{k}'] += v
 
                 # C: Loss Computation (Mean reduction to match single-head scale)
                 with torch.cuda.amp.autocast(enabled=use_amp):
@@ -340,6 +345,10 @@ def train_epoch(model, loader, optimizer, device, epoch,
             'loss_struct': (comp_metrics['loss_struct'] / args.gm_steps) / max(n, 1),
             'loss_percep': (comp_metrics['loss_percep'] / args.gm_steps) / max(n, 1),
             'loss_phys': (comp_metrics['loss_phys'] / args.gm_steps) / max(n, 1),
+            'phys_blur_edge': (comp_metrics['phys_blur_edge'] / args.gm_steps) / max(n, 1),
+            'phys_occlusion': (comp_metrics['phys_occlusion'] / args.gm_steps) / max(n, 1),
+            'phys_energy_conserv': (comp_metrics['phys_energy_conserv'] / args.gm_steps) / max(n, 1),
+            'phys_bokeh': (comp_metrics['phys_bokeh'] / args.gm_steps) / max(n, 1),
             'eanchor_struct': comp_metrics['eanchor_struct'] / max(n, 1),
             'eanchor_percep': comp_metrics['eanchor_percep'] / max(n, 1),
             'eanchor_phys': comp_metrics['eanchor_phys'] / max(n, 1),
@@ -913,6 +922,7 @@ def main():
         print(f"Train Loss: {train_loss:.6f}  |  Val Loss: {val_loss:.6f}")
         if args.compositional_ebm:
             print(f"    Compositional: Struct={train_losses['loss_struct']:.4f}, Percep={train_losses['loss_percep']:.4f}, Phys={train_losses['loss_phys']:.4f}")
+            print(f"    Phys detail: blur_edge={train_losses['phys_blur_edge']:.6f}, occ={train_losses['phys_occlusion']:.6f}, energy={train_losses['phys_energy_conserv']:.6f}, bokeh={train_losses['phys_bokeh']:.6f}")
 
         # ── Val PSNR 측정 (실제 생성 품질) ──
         val_psnr = compute_val_psnr(
@@ -936,6 +946,11 @@ def main():
                 writer.add_scalar('train/loss_struct', train_losses.get('loss_struct', 0), epoch)
                 writer.add_scalar('train/loss_percep', train_losses.get('loss_percep', 0), epoch)
                 writer.add_scalar('train/loss_phys', train_losses.get('loss_phys', 0), epoch)
+                # Physical sub-losses
+                writer.add_scalar('train/phys_blur_edge', train_losses.get('phys_blur_edge', 0), epoch)
+                writer.add_scalar('train/phys_occlusion', train_losses.get('phys_occlusion', 0), epoch)
+                writer.add_scalar('train/phys_energy_conserv', train_losses.get('phys_energy_conserv', 0), epoch)
+                writer.add_scalar('train/phys_bokeh', train_losses.get('phys_bokeh', 0), epoch)
                 writer.add_scalar('train/eanchor_struct', train_losses.get('eanchor_struct', 0), epoch)
                 writer.add_scalar('train/eanchor_percep', train_losses.get('eanchor_percep', 0), epoch)
                 writer.add_scalar('train/eanchor_phys', train_losses.get('eanchor_phys', 0), epoch)

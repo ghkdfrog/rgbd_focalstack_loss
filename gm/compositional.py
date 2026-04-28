@@ -74,10 +74,16 @@ class CompositionalTargets(nn.Module):
         Physical target function with 4 sub-losses.
         x_full: Original input with RGB, D, and CoC.
         diopter: Diopter condition.
-        Returns: scalar total error (reduced by sum)
+        Returns: (scalar total error, dict of individual sub-losses)
         """
         N, C, H, W = x_pred.shape
         loss_phys = torch.tensor(0.0, device=self.device)
+        sub_losses = {
+            'blur_edge': 0.0,
+            'occlusion': 0.0,
+            'energy_conserv': 0.0,
+            'bokeh': 0.0,
+        }
         
         coc_map = None
         if self.args.diopter_mode in ['coc', 'coc_signed', 'coc_abs'] and x_full.shape[1] >= 8:
@@ -93,7 +99,9 @@ class CompositionalTargets(nn.Module):
             w_focal = torch.exp(-self.args.phys_gamma * torch.abs(coc_map))
             
             err_blur = w_focal * ((grad_pred - grad_gt) ** 2)
-            loss_phys += self.args.lambda_blur_edge * err_blur.to(torch.float32).sum()
+            loss_blur = self.args.lambda_blur_edge * err_blur.to(torch.float32).sum()
+            loss_phys += loss_blur
+            sub_losses['blur_edge'] = loss_blur.item()
             
         # 2. Occlusion Boundary Loss (Emphasize error amplification at depth edges)
         if self.args.enable_phys_occ:
@@ -105,7 +113,9 @@ class CompositionalTargets(nn.Module):
             m_occ = torch.tanh(self.args.kappa_occ * grad_depth)
             
             err_occ = m_occ * ((x_pred - gt) ** 2)
-            loss_phys += self.args.lambda_occlusion * err_occ.to(torch.float32).sum()
+            loss_occ = self.args.lambda_occlusion * err_occ.to(torch.float32).sum()
+            loss_phys += loss_occ
+            sub_losses['occlusion'] = loss_occ.item()
             
         # 3. Local Energy Conservation (Avg pool)
         if self.args.enable_phys_energy:
@@ -116,7 +126,9 @@ class CompositionalTargets(nn.Module):
             energy_gt = pool(gt)
             
             err_energy = (energy_pred - energy_gt) ** 2
-            loss_phys += self.args.lambda_energy_conserv * err_energy.to(torch.float32).sum()
+            loss_energy = self.args.lambda_energy_conserv * err_energy.to(torch.float32).sum()
+            loss_phys += loss_energy
+            sub_losses['energy_conserv'] = loss_energy.item()
             
         # 4. High-Intensity Bokeh (Under-intensity prevention)
         if self.args.enable_phys_bokeh:
@@ -131,6 +143,8 @@ class CompositionalTargets(nn.Module):
             
             # L1 Loss to prevent under-intensity but maintain sharpness
             err_bokeh = m_bokeh * torch.abs(x_pred - gt)
-            loss_phys += self.args.lambda_bokeh * err_bokeh.to(torch.float32).sum()
+            loss_bokeh = self.args.lambda_bokeh * err_bokeh.to(torch.float32).sum()
+            loss_phys += loss_bokeh
+            sub_losses['bokeh'] = loss_bokeh.item()
             
-        return loss_phys
+        return loss_phys, sub_losses
