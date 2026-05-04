@@ -50,3 +50,9 @@ data/
 
 # MacOS
 .DS_Store
+
+# Log files (추가 추천)
+*.log
+
+# Inventory or temporary text files (추가 추천)
+pth_inventory.txt
