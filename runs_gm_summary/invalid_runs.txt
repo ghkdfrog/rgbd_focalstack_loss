@@ -1,4 +1,4 @@
-# Invalid runs (no inference folder): 40
+# Invalid runs (no inference folder): 39
 
 gm_coc_abs_conv1x1_linear_20260325_125239
 gm_coc_abs_conv1x1_linear_20260406_142724
@@ -8,7 +8,6 @@ gm_coc_abs_conv1x1_linear_20260413_161150
 gm_coc_abs_conv1x1_linear_20260413_163306
 gm_coc_abs_conv1x1_linear_20260423_071056
 gm_coc_abs_conv1x1_linear_20260423_201018
-gm_coc_abs_conv1x1_linear_20260429_132910
 gm_coc_abs_linear_20260323_152249
 gm_coc_conv1x1_linear_20260414_084339
 gm_coc_linear_20260316_083358
